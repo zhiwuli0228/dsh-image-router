@@ -203,6 +203,21 @@ window.__ModuleLoader__.load({
 		const number = (value) => (typeof value === 'number' && Number.isFinite(value) ? String(value) : text(value))
 		const routeOf = (value) => (value !== null && typeof value === 'object' ? value : {})
 
+		/**
+		 * The same value with any `apiKey` removed.
+		 *
+		 * The credential is write-only by design, but the settings snapshot carries
+		 * the resolved value — which is the user layer, and older builds stored the
+		 * key there. Anything that seeds an editor from that snapshot has to strip it,
+		 * or the next save writes the secret back into a plain-text settings file.
+		 */
+		const withoutKey = (value) => {
+			if (value === null || typeof value !== 'object' || Array.isArray(value)) return {}
+			const { apiKey, ...rest } = value
+			void apiKey
+			return rest
+		}
+
 		/** One labelled text input. */
 		function field(props) {
 			return h('label', { style: styles.row, key: props.name }, [
@@ -272,7 +287,12 @@ window.__ModuleLoader__.load({
 			const base = draft ?? {
 				mode: text(effective.mode),
 				vision: { provider: text(routeOf(effective.vision).provider), model: text(routeOf(effective.vision).model) },
-				endpoint: routeOf(routeOf(effective.vision).endpoint),
+				// The stored endpoint is copied WITHOUT its `apiKey`. The settings
+				// snapshot carries the resolved value, which may hold a key written by
+				// an older build; seeding the editor from it would put the secret back
+				// in the draft and round-trip it to settings.yaml on the next save. The
+				// field starts empty and only ever carries a freshly typed key.
+				endpoint: withoutKey(routeOf(routeOf(effective.vision).endpoint)),
 				instruction: text(effective.instruction),
 				maxTokens: number(effective.maxTokens),
 				timeoutMs: number(effective.timeoutMs),

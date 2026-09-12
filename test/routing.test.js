@@ -12,7 +12,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
 
-import { apply, Config, decideRoute, discoverVisionModels, modelAcceptsImages, nameLooksLikeImage, normalizeConfig, promptWantsVision, sameModel, schemaForm } from '../lib/index.js'
+import { apply, Config, configBase, decideRoute, discoverVisionModels, modelAcceptsImages, nameLooksLikeImage, normalizeConfig, promptWantsVision, sameModel, schemaForm } from '../lib/index.js'
 import { ENDPOINT_APIS, ENDPOINT_KEY_REF, ENDPOINT_PROVIDER, endpointSettingsOp, readEndpoint, routeForEndpoint, syncEndpoint } from '../lib/endpoint.js'
 
 const EXTENSIONS = ['png', 'jpg', 'jpeg', 'webp', 'gif']
@@ -1404,11 +1404,82 @@ test('the browser half reports a broken scope instead of throwing at activation'
 	assert.equal(warned, 1, 'an unusable scope is reported once, not thrown')
 })
 
-// ── The write must not wreck a route the user also edits ────────────────────
+// ── The credential never enters this plugin's own configuration ─────────────
 //
-// The generated route is a normal `llm-pi-ai` route, so the Models page can edit
-// it too. A settings `set` at this path replaces the whole profile object, so a
-// save from this card has to merge rather than overwrite.
+// The settings section is handed back by `describe()` as the RESOLVED value,
+// which includes the user layer, and the section is persisted verbatim. A key
+// left in there therefore round-trips into `$DSH_HOME/settings.yaml` as plain
+// text — observed live, which is why the composition base strips it and the card
+// refuses to seed its editor from a stored key.
+
+test('the settings composition base carries no credential', () => {
+	const resolved = normalizeConfig({ vision: { endpoint: { ...ENDPOINT, apiKey: 'sk-live-secret' } } })
+	const base = configBase(resolved)
+	assert.equal(base.vision.endpoint.apiKey, undefined, 'the key must not reach the settings section')
+	assert.equal(base.vision.endpoint.baseURL, 'https://gateway.example/v1', 'everything else about the endpoint survives')
+	assert.equal(base.vision.endpoint.model, 'my-vision-model')
+	assert.equal(base.vision.endpoint.apiKeyEnv, undefined, 'the default reference is materialized by the Host when it writes the route, not carried in the section')
+	assert.equal(base.vision.provider, ENDPOINT_PROVIDER)
+
+	// An explicitly chosen reference does travel, because it is configuration.
+	const named = configBase(normalizeConfig({ vision: { endpoint: { ...ENDPOINT, apiKeyEnv: 'MY_GATEWAY_KEY', apiKey: 'sk-live-secret' } } }))
+	assert.equal(named.vision.endpoint.apiKeyEnv, 'MY_GATEWAY_KEY')
+	assert.equal(named.vision.endpoint.apiKey, undefined)
+
+	// The key is still what the endpoint tier writes to the credential store: the
+	// host keeps it in the live config, it is just never the section's base.
+	assert.equal(resolved.endpoint.apiKey, 'sk-live-secret')
+})
+
+test('the card never seeds its editor from a stored key', async () => {
+	// An older build could have written the key into the user layer, so the snapshot
+	// may still contain one. Seeding the draft from it would re-persist the secret on
+	// the next unrelated save.
+	const source = readFileSync(new URL('../client/client.js', import.meta.url), 'utf8')
+	let entry
+	new Function('window', source)({ __ModuleLoader__: { load: (value) => { entry = value } } })
+	const React = {
+		createElement: (type, props, ...children) => ({ type, props: props ?? {}, children }),
+		useState: (initial) => [initial, () => {}],
+		useEffect: () => {},
+		useCallback: (fn) => fn,
+		useSyncExternalStore: (_s, snapshot) => snapshot(),
+		useMemo: (fn) => fn()
+	}
+	const module = entry.factory((name) => (name === 'react' ? React : (() => { throw new Error(name) })()))
+	let renderCard
+	module.apply({
+		remote: { settings: { describe: async () => ({ ok: true, value: { namespaces: [] } }) }, llm: { listProviders: async () => ({ ok: true, value: [] }) } },
+		settingsScope: {
+			bind: () => ({
+				subscribe: () => () => {},
+				getSnapshot: () => ({
+					value: { mode: 'digest', vision: { endpoint: { baseURL: 'https://x/v1', model: 'm', apiKey: 'sk-stale-secret' } } },
+					writable: true,
+					revision: 1
+				}),
+				set: async () => {}
+			})
+		},
+		slots: { inject: (_n, callback) => callback(), register: (_o, render) => { renderCard = render }, entries: () => [] }
+	})
+
+	const tree = typeof renderCard().type === 'function' ? renderCard().type(renderCard().props) : renderCard()
+	const secretLeaks = []
+	const walk = (node) => {
+		if (node === null || node === undefined) return
+		if (typeof node === 'string') {
+			if (node.includes('sk-stale-secret')) secretLeaks.push(node)
+			return
+		}
+		if (Array.isArray(node)) { for (const child of node) walk(child); return }
+		if (typeof node !== 'object') return
+		if (typeof node.props?.value === 'string' && node.props.value.includes('sk-stale-secret')) secretLeaks.push(node.props.value)
+		for (const child of node.children ?? []) walk(child)
+	}
+	walk(tree)
+	assert.deepEqual(secretLeaks, [], 'a stored key must never appear in the editor, so it can never be written back')
+})
 
 test('the endpoint write preserves fields the Models page added to the route', async () => {
 	const endpoint = readEndpoint(ENDPOINT, 'vision.endpoint', [])
