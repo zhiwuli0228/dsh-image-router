@@ -12,7 +12,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
 
-import { apply, Config, configBase, decideRoute, discoverVisionModels, modelAcceptsImages, nameLooksLikeImage, normalizeConfig, promptWantsVision, sameModel, schemaForm } from '../lib/index.js'
+import { apply, Config, configBase, createEnv, decideRoute, discoverVisionModels, modelAcceptsImages, nameLooksLikeImage, normalizeConfig, promptWantsVision, sameModel, schemaForm } from '../lib/index.js'
 import { ENDPOINT_APIS, ENDPOINT_KEY_REF, ENDPOINT_PROVIDER, endpointSettingsOp, readEndpoint, routeForEndpoint, syncEndpoint } from '../lib/endpoint.js'
 
 const EXTENSIONS = ['png', 'jpg', 'jpeg', 'webp', 'gif']
@@ -397,7 +397,9 @@ test('digest mode sends the admitted images to the vision route as a one-shot ca
 	assert.equal(forwarded.content.some((part) => part.type === 'image'), false)
 	const audit = readFileSync(trace, 'utf8')
 	assert.ok(audit.includes('mounted mode=digest'))
-	assert.ok(audit.includes('digest session=session-7 images=1'))
+	// The decision line names the route that served the image: "which route was
+	// actually used" is the question a saved-looking-ignored configuration raises.
+	assert.ok(audit.includes(`digest session=session-7 vision=${VISION.provider}/${VISION.model} images=1`), 'the digest line records the route in force')
 	assert.ok(audit.includes('names=shot.png'), 'the audit keeps the original name')
 	assert.equal(audit.includes('error='), false)
 	rmSync(join(trace, '..'), { recursive: true, force: true })
@@ -1479,6 +1481,42 @@ test('the card never seeds its editor from a stored key', async () => {
 	}
 	walk(tree)
 	assert.deepEqual(secretLeaks, [], 'a stored key must never appear in the editor, so it can never be written back')
+})
+
+// ── The configuration in force follows the settings layer, whenever it lands ─
+//
+// The settings section arrives asynchronously, after the environment exists. A
+// mount that captured the loader's configuration before that kept routing to the
+// composed route for the life of the process — observed live as
+// `mounted … vision=<composed route>` while the saved section named an endpoint
+// route, and as a digest that never reached the endpoint the user configured.
+
+test('the live configuration reflects a settings section installed after startup', () => {
+	const composed = { mode: 'digest', vision: { provider: 'qwen-token-plan-cn', model: 'qwen3.8-flash' }, tool: false }
+	const env = createEnv({}, composed, normalizeConfig(composed), () => {})
+
+	assert.deepEqual(env.config.vision, { provider: 'qwen-token-plan-cn', model: 'qwen3.8-flash' }, 'before any section, the loader configuration is in force')
+	assert.equal(env.hasOverrides, false)
+
+	// The user's saved section arrives: it names an endpoint, not a route.
+	env.setOverrides({ vision: { endpoint: { baseURL: 'https://gateway.example/v1', model: 'qwen3.8-max', images: true } } })
+
+	assert.equal(env.hasOverrides, true)
+	assert.deepEqual(env.config.vision, { provider: ENDPOINT_PROVIDER, model: 'qwen3.8-max' }, 'the endpoint the user saved is the route in force, not the composed one')
+	assert.equal(env.config.endpoint.baseURL, 'https://gateway.example/v1')
+
+	// A section the disposer clears restores the composed configuration.
+	env.setOverrides(undefined)
+	assert.deepEqual(env.config.vision, { provider: 'qwen-token-plan-cn', model: 'qwen3.8-flash' }, 'a cleared section restores the composed route')
+})
+
+test('an invalid section is refused in favour of the last good configuration', () => {
+	const composed = { mode: 'digest', vision: { provider: 'qwen-token-plan-cn', model: 'qwen3.8-flash' } }
+	const audit = []
+	const env = createEnv({}, composed, normalizeConfig(composed), (line) => audit.push(line))
+	env.setOverrides({ mode: 'digest', maxTokens: 0 })
+	assert.equal(env.config.maxTokens, 900, 'the last good value survives a bad save')
+	assert.ok(audit.some((line) => line.startsWith('settings-invalid')), 'and the refusal is audited')
 })
 
 test('the endpoint write preserves fields the Models page added to the route', async () => {
