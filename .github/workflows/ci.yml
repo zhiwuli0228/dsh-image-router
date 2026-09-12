@@ -46,10 +46,6 @@ jobs:
             const patch = manifest.dsh?.bundle?.patch
             if (typeof patch !== 'string') throw new Error('package.json must declare dsh.bundle.patch')
             readFileSync(patch, 'utf8')
-            const entry = readFileSync('lib/index.js', 'utf8')
-            for (const token of ['export const name', 'export const Config', 'export function apply']) {
-              if (!entry.includes(token)) throw new Error('lib/index.js is missing ' + token)
-            }
             // A declared browser half must export a bundle dsh-client-modules can
             // read, which is exactly the check it throws on at runtime.
             if (manifest.dsh?.client !== undefined) {
@@ -58,4 +54,24 @@ jobs:
               readFileSync(client, 'utf8')
             }
             console.log('manifest ok:', manifest.name, manifest.version, '->', patch)
+          "
+
+      # The entry's exports are what the loader actually consumes, so import the
+      # module and check them instead of grepping the source. This entry derives
+      # `Config` from a top-level await (the schema is dual-form), so it re-exports a
+      # binding rather than declaring `export const Config` -- a text match reported
+      # that as missing, and this job failed on every run since.
+      - name: Check the entry exports
+        run: |
+          node --input-type=module -e "
+            const mod = await import('./lib/index.js')
+            if (typeof mod.name !== 'string' || mod.name.length === 0) throw new Error('the entry must export a non-empty name')
+            if (mod.default !== undefined) throw new Error('a DSH plugin entry must not have a default export')
+            if (mod.Config === undefined) throw new Error('the entry must export Config')
+            if (typeof mod.apply !== 'function') throw new Error('the entry must export apply')
+            for (const method of ['toJSON', 'safeParse']) {
+              if (typeof mod.Config[method] !== 'function') throw new Error('Config must answer ' + method + '(), which the settings service calls')
+            }
+            if (typeof mod.Config({ mode: 'digest' }) !== 'object') throw new Error('Config must be callable to layer defaults')
+            console.log('entry ok:', mod.name, '| schema form:', mod.schemaForm)
           "
