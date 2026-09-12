@@ -245,6 +245,17 @@ window.__ModuleLoader__.load({
 			const [status, setStatus] = React.useState('')
 			const [candidates, setCandidates] = React.useState(null)
 
+			// Self-report: this component runs only when the tab actually dispatches
+			// the card. Combined with the registration report, it separates "the slot
+			// never kept my registration" from "the card rendered but drew nothing".
+			React.useEffect(() => {
+				try {
+					window.__imageRouter = { ...(window.__imageRouter ?? {}), cardRendered: true, cardRenderedAt: Date.now() }
+				} catch {
+					/* a frozen global must never break the card */
+				}
+			}, [])
+
 			React.useEffect(() => {
 				setDraft(null)
 			}, [snapshot?.revision])
