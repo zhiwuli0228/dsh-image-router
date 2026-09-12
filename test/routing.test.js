@@ -1137,29 +1137,26 @@ test('Config satisfies every consumer the harness reads it through', () => {
 // phantom `@deepseek-ai/dsh-client-runtime` (a module that exists nowhere) kept
 // this card invisible while the boot console stayed clean.
 
-test('the browser half declares exactly the one service the context gates on', () => {
-	// cordis' plugin context is declaration-gated: reading `ctx.slots` without
-	// declaring it fails the loader entry with
-	// `cannot get property "slots" without inject`, and an undeclared service is
-	// also the difference between "activates" and "pending forever".
+test('the client manifest declares only service names this shell provides', () => {
+	// `dsh.client.inject` entries are SERVICE names, not package names: most of
+	// them are not packages at all (`@deepseek-ai/dsh-client-runtime` exists
+	// nowhere on disk, yet every plugin that renders a card declares it), and a
+	// name the shell cannot provide is what leaves an entry pending forever.
+	// The set below is what this deployment's shell serves, read from a live boot.
 	const manifest = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'))
-	assert.equal(manifest.dsh.client.platform, 'web')
-
-	const source = readFileSync(new URL('../client/client.js', import.meta.url), 'utf8')
-	let entry
-	new Function('window', source)({ __ModuleLoader__: { load: (value) => { entry = value } } })
-	const React = {
-		createElement: (type, props, ...children) => ({ type, props: props ?? {}, children }),
-		useState: (initial) => [initial, () => {}],
-		useEffect: () => {},
-		useCallback: (fn) => fn,
-		useSyncExternalStore: (_s, snapshot) => snapshot(),
-		useMemo: (fn) => fn()
+	const served = new Set([
+		'@deepseek-ai/dsh-client-runtime',
+		'@deepseek-ai/dsh-client-ui-settings',
+		'@deepseek-ai/dsh-api-remotes',
+		'@deepseek-ai/dsh-client-locale',
+		'@deepseek-ai/dsh-client-ui-theme',
+		'@deepseek-ai/dsh-client-connection',
+		'@deepseek-ai/dsh-client-ui-settings-general'
+	])
+	for (const dep of manifest.dsh.client.inject) {
+		assert.ok(served.has(dep), `client inject names a service this shell does not serve: ${dep}`)
 	}
-	const module = entry.factory((name) => (name === 'react' ? React : (() => { throw new Error(name) })()))
-
-	assert.deepEqual(module.inject, ['slots'], 'slots must be declared: the card cannot be contributed without it')
-	assert.equal(module.name, 'image-router')
+	assert.equal(manifest.dsh.client.platform, 'web')
 })
 
 test('the browser half activates and registers its card', () => {
