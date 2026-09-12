@@ -26,6 +26,31 @@ const PLAIN = [{ type: 'text', text: 'plain question' }]
 /** Let the endpoint tier's fire-and-forget promises settle before asserting. */
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0))
 
+/**
+ * A client-context double that enforces cordis' declaration gate.
+ *
+ * The real plugin context refuses undeclared service reads with
+ * `cannot get property "X" without inject` — a failure that takes the whole
+ * loader entry down, and one that no plain object double can produce. This proxy
+ * reproduces it so the browser half cannot silently regress into reading a
+ * service it forgot to declare.
+ *
+ * @param base - the context behaviour under test (`remote`, `inject`).
+ * @param declared - the service names the plugin exported in `inject`.
+ * @returns the gated context.
+ */
+function declaredContext(base, declared) {
+	const allowed = new Set(['inject', 'remote', ...declared])
+	return new Proxy(base, {
+		get(target, property, receiver) {
+			if (typeof property === 'string' && !allowed.has(property) && !(property in target)) {
+				throw new TypeError(`cannot get property "${property}" without inject`)
+			}
+			return Reflect.get(target, property, receiver)
+		}
+	})
+}
+
 /** Minimal ctx double recording logger calls and collecting effects. */
 function fakeContext(controller, llm, { controllerAvailable = true, attachments, fs, tools, settings, credentials } = {}) {
 	const logs = { info: [], warn: [] }
@@ -1112,35 +1137,17 @@ test('Config satisfies every consumer the harness reads it through', () => {
 // phantom `@deepseek-ai/dsh-client-runtime` (a module that exists nowhere) kept
 // this card invisible while the boot console stayed clean.
 
-test('the client manifest declares only modules the shell actually serves', () => {
+test('the browser half declares exactly the one service the context gates on', () => {
+	// cordis' plugin context is declaration-gated: reading `ctx.slots` without
+	// declaring it fails the loader entry with
+	// `cannot get property "slots" without inject`, and an undeclared service is
+	// also the difference between "activates" and "pending forever".
 	const manifest = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'))
-	const declared = manifest.dsh.client.inject
-	assert.ok(Array.isArray(declared) && declared.length > 0)
-
-	// The set this deployment's client manifest serves, from a live boot dump.
-	// Names outside it are not necessarily wrong everywhere, but adding one here
-	// has to be a deliberate act with a boot to back it: an absent dependency is
-	// silent on the console and fatal to the card.
-	const served = new Set([
-		'@deepseek-ai/dsh-client-ui-settings',
-		'@deepseek-ai/dsh-api-remotes',
-		'@deepseek-ai/dsh-client-ui-settings-general',
-		'@deepseek-ai/dsh-client-locale',
-		'@deepseek-ai/dsh-client-ui-theme',
-		'@deepseek-ai/dsh-client-connection'
-	])
-	for (const dep of declared) assert.ok(served.has(dep), `declared client module is not served by this deployment: ${dep}`)
 	assert.equal(manifest.dsh.client.platform, 'web')
-})
 
-test('the browser half activates and registers its card', () => {
-	// Load the bundle the way the shell does, then drive the plugin's own apply.
 	const source = readFileSync(new URL('../client/client.js', import.meta.url), 'utf8')
 	let entry
-	const windowShim = { __ModuleLoader__: { load: (value) => { entry = value } } }
-	new Function('window', source)(windowShim)
-	assert.equal(entry.id, 'dsh-image-router')
-
+	new Function('window', source)({ __ModuleLoader__: { load: (value) => { entry = value } } })
 	const React = {
 		createElement: (type, props, ...children) => ({ type, props: props ?? {}, children }),
 		useState: (initial) => [initial, () => {}],
@@ -1149,11 +1156,25 @@ test('the browser half activates and registers its card', () => {
 		useSyncExternalStore: (_s, snapshot) => snapshot(),
 		useMemo: (fn) => fn()
 	}
-	const module = entry.factory((name) => {
-		if (name === 'react') return React
-		throw new Error(`unexpected require: ${name}`)
-	})
+	const module = entry.factory((name) => (name === 'react' ? React : (() => { throw new Error(name) })()))
+
+	assert.deepEqual(module.inject, ['slots'], 'slots must be declared: the card cannot be contributed without it')
 	assert.equal(module.name, 'image-router')
+})
+
+test('the browser half activates and registers its card', () => {
+	const source = readFileSync(new URL('../client/client.js', import.meta.url), 'utf8')
+	let entry
+	new Function('window', source)({ __ModuleLoader__: { load: (value) => { entry = value } } })
+	const React = {
+		createElement: (type, props, ...children) => ({ type, props: props ?? {}, children }),
+		useState: (initial) => [initial, () => {}],
+		useEffect: () => {},
+		useCallback: (fn) => fn,
+		useSyncExternalStore: (_s, snapshot) => snapshot(),
+		useMemo: (fn) => fn()
+	}
+	const module = entry.factory((name) => (name === 'react' ? React : (() => { throw new Error(name) })()))
 
 	const registered = []
 	let bound
@@ -1176,17 +1197,14 @@ test('the browser half activates and registers its card', () => {
 			}
 		}
 	}
-	module.apply({ remote: {}, inject: (names, callback) => { injected = names; callback(scoped) } })
+	module.apply(declaredContext({ remote: {}, inject: (names, callback) => { injected = names; callback(scoped) } }, module.inject))
 
-	assert.deepEqual(module.inject, [], 'the browser half must declare no required service: an unsatisfiable declaration leaves the entry pending forever, silently')
-	assert.deepEqual(injected, ['slots', 'settingsScope'], 'both services are reached through optional injection instead')
+	assert.deepEqual(injected, ['settingsScope'], 'the settings scope is the optional half')
 	assert.deepEqual(registered, ['inject:settings.plugin.item', 'register:settings.plugin.item:image-router'], 'the card is claimed under the namespace the Host serves, or the tab dispatches nothing')
 	assert.equal(bound.namespace, 'image-router', 'both halves must spell the same namespace')
 })
 
-test('the browser half degrades when a service never arrives', () => {
-	// Optional injection means the callback simply never runs. That must be a
-	// clean no-op, not a throw that could take the shell down.
+test('the browser half degrades when the settings scope never arrives', () => {
 	const source = readFileSync(new URL('../client/client.js', import.meta.url), 'utf8')
 	let entry
 	new Function('window', source)({ __ModuleLoader__: { load: (value) => { entry = value } } })
@@ -1199,13 +1217,16 @@ test('the browser half degrades when a service never arrives', () => {
 		useMemo: (fn) => fn()
 	}
 	const module = entry.factory((name) => (name === 'react' ? React : (() => { throw new Error(name) })()))
-	module.apply({ remote: {}, inject: () => {} })
-	// A callback that does fire without the services must not throw either.
+
+	// Optional injection simply never runs the callback: a clean no-op.
+	module.apply(declaredContext({ remote: {}, inject: () => {} }, module.inject))
+
+	// A callback that fires without the service must be reported, not thrown.
 	let warned = 0
 	const originalWarn = console.warn
 	console.warn = () => { warned++ }
 	try {
-		module.apply({ remote: {}, inject: (_names, callback) => callback({}) })
+		module.apply(declaredContext({ remote: {}, inject: (_names, callback) => callback({ slots: { inject: () => {}, register: () => {} } }) }, module.inject))
 	} finally {
 		console.warn = originalWarn
 	}

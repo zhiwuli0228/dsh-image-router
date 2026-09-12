@@ -589,26 +589,22 @@ window.__ModuleLoader__.load({
 		const name = 'image-router'
 
 		/**
-		 * Deliberately empty.
+		 * Required, and only this one.
 		 *
-		 * An earlier version declared `['slots']`, copied from another plugin's
-		 * browser half. `slots` is not a package name and appears in no client
-		 * manifest, so it is an implicitly provided service — and a declared
-		 * dependency the loader cannot satisfy leaves the entry **pending forever**,
-		 * silently: `apply` never runs and the card never registers. This half needs
-		 * nothing at activation time anyway; both services it uses are reached
-		 * through optional injection below, the same shape the Host half uses so a
-		 * thin deployment still activates.
+		 * `slots` is the service that carries the card into the settings tab, and
+		 * cordis' plugin context is declaration-gated: reading `ctx.slots` without
+		 * declaring it throws `cannot get property "slots" without inject`, which
+		 * fails the loader entry outright. `settingsScope` is reached the optional
+		 * way instead, so a deployment that ships no settings UI still activates.
 		 */
-		const inject = []
+		const inject = ['slots']
 
 		/**
 		 * Activation report, readable as `window.__imageRouter` in the browser.
 		 *
-		 * The failure modes here are silent by nature — a pending entry and a card
-		 * that never rendered both look like "the option is missing" with a clean
-		 * console. This records which step was reached so that state is observable
-		 * instead of inferred.
+		 * The failure modes on this path are silent by nature — a pending entry and
+		 * a card that never rendered both look like "the option is missing" — so the
+		 * report records which step was reached instead of leaving it to inference.
 		 */
 		const report = { applied: false, slots: false, scope: false, registered: false, error: undefined }
 		const publish = () => {
@@ -621,20 +617,19 @@ window.__ModuleLoader__.load({
 
 		function apply(ctx) {
 			report.applied = true
-			report.hasCtx = ctx !== null && typeof ctx === 'object'
-			report.ctxSlots = report.hasCtx ? ctx.slots !== undefined : false
+			// Declared above, so this read is permitted; it is also the only service
+			// the plugin may touch before the optional injection below runs.
+			report.slots = ctx.slots !== undefined
 			publish()
 			try {
-				// Optional injection of BOTH services: neither is a package, and a
-				// required one would leave this entry pending without a word.
-				ctx.inject(['slots', 'settingsScope'], (scoped) => {
-					report.slots = scoped.slots !== undefined
+				ctx.inject(['settingsScope'], (scoped) => {
 					report.scope = scoped.settingsScope !== undefined
+					report.scopedSlots = scoped.slots !== undefined
 					publish()
-					if (scoped.slots === undefined || scoped.settingsScope === undefined) {
-						report.error = 'slots or settingsScope unavailable'
+					if (scoped.settingsScope === undefined) {
+						report.error = 'settingsScope unavailable'
 						publish()
-						console.warn('[image-router] settings card unavailable:', report.error)
+						console.warn('[image-router] settings card unavailable: settingsScope is not available in this deployment')
 						return
 					}
 					const scope = scoped.settingsScope.bind({ namespace: NAMESPACE })
