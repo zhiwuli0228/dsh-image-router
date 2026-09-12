@@ -793,9 +793,58 @@ test('apply registers no tool when disabled, and tolerates a deployment without 
 	assert.equal(bare.logs.warn.length, 0)
 })
 
-/** Settings-service double: one namespace whose live value object the test can save into. */
+/**
+ * Merge two settings layers the way the HOST does.
+ *
+ * Deliberately DEEP. The host composes a namespace's value from the registrant's base
+ * and the user's section field by field, so a shallow double here hides a real
+ * failure: a `provider`/`model` left in the base survived into the section beside the
+ * user's `endpoint`, which made the composed route look explicitly chosen and outrank
+ * the endpoint the user had configured. A shallow fixture passed for several rounds
+ * while the live deployment failed.
+ */
+function deepMerge(base, patch) {
+	const out = { ...base }
+	for (const [key, value] of Object.entries(patch ?? {})) {
+		const existing = out[key]
+		const bothPlain = existing !== null && typeof existing === 'object' && !Array.isArray(existing) && value !== null && typeof value === 'object' && !Array.isArray(value)
+		out[key] = bothPlain ? deepMerge(existing, value) : value
+	}
+	return out
+}
+
+/**
+ * Apply a patch the way the service's path ops do: a value sets, an explicit
+ * `undefined` unsets. A save that merely spread its patch would leave a cleared
+ * endpoint in place, which is not what the service does.
+ */
+function applyUnset(target, patch) {
+	const out = { ...target }
+	for (const [key, value] of Object.entries(patch ?? {})) {
+		if (value === undefined) {
+			delete out[key]
+			continue
+		}
+		const existing = out[key]
+		const bothPlain = existing !== null && typeof existing === 'object' && !Array.isArray(existing) && value !== null && typeof value === 'object' && !Array.isArray(value)
+		out[key] = bothPlain ? applyUnset(existing, value) : value
+	}
+	return out
+}
+
+/**
+ * Settings-service double: one namespace whose live value object the test can save into.
+ *
+ * The base and the user section are kept apart and composed on read, because that is
+ * what the service does and the composition is where the bugs live. `state.value` is
+ * the composed result, kept for tests that assert on it directly.
+ */
 function fakeSettings(initial = {}) {
-	const state = { value: initial, watchers: [] }
+	const state = { base: {}, user: initial, value: { ...initial }, watchers: [] }
+	const compose = () => {
+		state.value = deepMerge(state.base, state.user)
+		return state.value
+	}
 	return {
 		state,
 		namespace: undefined,
@@ -807,8 +856,11 @@ function fakeSettings(initial = {}) {
 			this.namespace = namespace
 			this.schema = schema
 			this.options = options
+			state.base = options?.base ?? {}
+			compose()
 			return {
-				get: () => state.value,
+				// The composed value, base included, exactly as the real service answers.
+				get: () => deepMerge(state.base, state.user),
 				watch: (listener) => {
 					state.watchers.push(listener)
 				}
@@ -816,7 +868,8 @@ function fakeSettings(initial = {}) {
 		},
 		/** Simulate a save from the plugin configuration page. */
 		save(patch) {
-			state.value = { ...state.value, ...patch }
+			state.user = applyUnset(state.user, patch)
+			compose()
 			for (const listener of state.watchers) listener()
 		},
 		/** The upstream write path the endpoint tier uses; only paths are touched. */
@@ -849,7 +902,7 @@ test('apply registers the editable settings namespace and honours a saved overri
 
 	assert.equal(settings.namespace, 'image-router', 'the card on the browser side keys to this namespace')
 	assert.equal(settings.schema, Config, 'the same schema validates the section and the loader config')
-	assert.equal(settings.options.base.vision.provider, VISION.provider, 'the composed config is the section base, so the card shows the values in force')
+	assert.equal(settings.options.base.vision.provider, undefined, 'the base states no route, or a later endpoint would be shadowed by it')
 
 	await controller.prompt({ sessionId: 's1', content: IMAGE })
 	assert.equal(llm.calls[0].provider, VISION.provider)
@@ -906,14 +959,21 @@ test('normalizeConfig derives the vision route from a custom endpoint', () => {
 	assert.equal(resolved.endpoint.model, 'my-vision-model')
 	assert.deepEqual(resolved.vision, { provider: ENDPOINT_PROVIDER, model: 'my-vision-model' }, 'the derived route is what every routing decision sees')
 	assert.equal(resolved.endpoint.api, 'openai-completions', 'the protocol defaults to the OpenAI-compatible one')
-	assert.equal(resolved.endpoint.apiKey, 'sk-card-typed')
+	// The credential is read from the declaring layer by the one consumer that writes
+	// it, so it never rides on a value the rest of the plugin reads.
+	assert.equal(resolved.endpoint.apiKey, undefined, 'the resolved configuration never carries the credential')
 })
 
-test('normalizeConfig keeps an explicit vision route when both tiers are set', () => {
+test('an endpoint outranks a route configured beside it', () => {
+	// The Endpoint is the more complete specification — address, model and credential —
+	// and its model *is* the route, so it decides. A route beside it is normally the
+	// entry's own default, and letting that default win is exactly how a saved endpoint
+	// was ignored in the live deployment. A user who wants the other route clears the
+	// endpoint instead, and the compose step keeps that as their own choice.
 	const resolved = normalizeConfig({ vision: { ...VISION, endpoint: ENDPOINT } })
 	assert.equal(resolved.problems, undefined)
-	assert.deepEqual(resolved.vision, VISION, 'the explicit route wins, so existing deployments keep working unchanged')
-	assert.notEqual(resolved.endpoint, undefined, 'the endpoint is still resolved, so the derived route stays available upstream')
+	assert.deepEqual(resolved.vision, { provider: ENDPOINT_PROVIDER, model: 'my-vision-model' }, 'the endpoint decides when both are present')
+	assert.notEqual(resolved.endpoint, undefined, 'and it stays resolved, so the derived route is available upstream')
 })
 
 test('normalizeConfig reports a malformed endpoint instead of disabling silently', () => {
@@ -985,10 +1045,23 @@ test('the endpoint tier withdraws its route when the endpoint is removed, keepin
 	const settings = fakeSettings()
 	const credentials = fakeCredentials()
 	const ctx = fakeContext(controller, llm, { attachments: fakeAttachments(), settings, credentials })
-	apply(ctx, { vision: { endpoint: ENDPOINT } })
+	// Realistic order: the entry is configured with a route, and the endpoint arrives
+	// from the configuration card afterwards. A profile whose own config declares an
+	// endpoint cannot withdraw it from the UI — the base would supply it again — which
+	// is correct: the entry's configuration is a default, and the card overrides it.
+	apply(ctx, { vision: VISION })
 	await flush()
+	assert.equal(settings.mutations.length, 0, 'a route-only configuration writes no upstream route')
 
-	settings.save({ vision: { provider: VISION.provider, model: VISION.model } })
+	settings.save({ vision: { ...VISION, endpoint: ENDPOINT } })
+	await flush()
+	assert.equal(settings.mutations.length, 1, 'saving an endpoint pushes the derived route')
+	assert.equal(credentials.sets.length, 1)
+
+	// Switching back to a route clears the endpoint rather than merely not mentioning
+	// it: a merge keeps a field the patch leaves out, and the service's own save uses
+	// `unset` for exactly this.
+	settings.save({ vision: { endpoint: undefined, provider: VISION.provider, model: VISION.model } })
 	await flush()
 
 	assert.equal(settings.mutations.length, 2, 'the withdrawal is one more write')
@@ -1428,9 +1501,10 @@ test('the settings composition base carries no credential', () => {
 	assert.equal(named.vision.endpoint.apiKeyEnv, 'MY_GATEWAY_KEY')
 	assert.equal(named.vision.endpoint.apiKey, undefined)
 
-	// The key is still what the endpoint tier writes to the credential store: the
-	// host keeps it in the live config, it is just never the section's base.
-	assert.equal(resolved.endpoint.apiKey, 'sk-live-secret')
+	// The key never survives into the resolved configuration at all: the endpoint tier
+	// reads the plaintext from the declaring layer at the one moment it writes the
+	// credential, so no later reader of `env.config` can see it.
+	assert.equal(resolved.endpoint.apiKey, undefined, 'the resolved configuration must not carry the credential')
 })
 
 test('the section base never states an endpoint route as an explicit choice', () => {
@@ -1454,9 +1528,22 @@ test('the section base never states an endpoint route as an explicit choice', ()
 	const handedBack = normalizeConfig({ ...base, ...section })
 	assert.deepEqual(handedBack.vision, { provider: ENDPOINT_PROVIDER, model: 'qwen3.8-max' }, 'the composed section still resolves to the endpoint')
 
-	// With no endpoint the base must still carry the explicit route.
+	// The live failure exactly: the loader's route is in the configuration when the
+	// base is computed (registration time, before any section exists), and the host
+	// deep-merges the base into the user's section. A route in the base would therefore
+	// survive beside the endpoint — and an endpoint outranks nothing, so the section
+	// would resolve to the composed route instead of the endpoint the user saved.
+	const loader = normalizeConfig({ mode: 'digest', vision: { provider: 'qwen-token-plan-cn', model: 'qwen3.8-flash' } })
+	const liveBase = configBase(loader)
+	const liveSection = deepMerge(liveBase, section)
+	assert.equal(liveSection.vision.provider, undefined, 'no route may survive the deep merge beside an endpoint')
+	assert.deepEqual(normalizeConfig(liveSection).vision, { provider: ENDPOINT_PROVIDER, model: 'qwen3.8-max' }, 'so the endpoint the user saved is the route in force')
+
+	// With no endpoint the base still states no route, and the loader's route remains in
+	// force because it lives in the entry's own configuration, which the base layers
+	// over rather than replaces.
 	const routeOnly = configBase(normalizeConfig({ mode: 'digest', vision: { provider: 'huawei', model: 'glm-5.2' } }))
-	assert.deepEqual(routeOnly.vision, { provider: 'huawei', model: 'glm-5.2' })
+	assert.deepEqual(routeOnly.vision, {}, 'the base states no route in either case')
 })
 
 test('an empty string is absent, not an explicit route', () => {
