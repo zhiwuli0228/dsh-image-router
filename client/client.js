@@ -651,10 +651,21 @@ window.__ModuleLoader__.load({
 					scoped.slots.inject('settings.plugin.item', () => {
 						report.slotDispatched = true
 						publish()
-						scoped.slots.register(
-							{ name: 'settings.plugin.item', key: NAMESPACE },
-							() => h(Card, { scope, remote: ctx.remote })
-						)
+						// The registration options follow the contract the official section
+						// ships for its own cards: `name` + `key` claim the namespace, and
+						// `inject` supplies the hooks the card is handed. `locale` is
+						// deliberately NOT declared — this card draws its own copy inline
+						// and registers no locale entries, and declaring a copy namespace
+						// with nothing under it is a claim the card cannot honour.
+						const cardOptions = {
+							name: 'settings.plugin.item',
+							key: NAMESPACE,
+							// No injected hooks: the card reads its state through the bound
+							// settings scope and the Remote table, both reached above.
+							inject: () => ({})
+						}
+						report.slotOptions = Object.keys(cardOptions)
+						scoped.slots.register(cardOptions, () => h(Card, { scope, remote: ctx.remote }))
 						report.registered = true
 						// Read the ledger back. The tab renders the intersection of the
 						// namespaces the Host serves with the entries this slot actually
@@ -670,6 +681,9 @@ window.__ModuleLoader__.load({
 							report.slotEntryKeys = Array.isArray(entries)
 								? entries.map((entry) => entry?.options?.key ?? entry?.key ?? '?').slice(0, 12)
 								: []
+							report.slotLocaleOfMine = Array.isArray(entries)
+								? entries.find((entry) => (entry?.options?.key ?? entry?.key) === NAMESPACE)?.options?.locale
+								: undefined
 						} catch (error) {
 							report.ledgerReadError = String(error)
 						}
