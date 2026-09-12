@@ -1270,13 +1270,17 @@ test('discoverVisionModels answers empty without an llm service instead of throw
 
 // ── The schema contract every consumer reads ────────────────────────────────
 //
-// The deployment this plugin actually runs in resolves no schemastery from its
-// own directory (verified: `schemaForm === 'fallback'` both from the checkout and
-// from an installed profile copy), so `Config` IS the dependency-free fallback.
-// Three consumers read it, and the third is what broke a live boot.
+// `Config` is dual-form, and which form loads depends on where the module sits:
+// from this checkout nothing resolves schemastery (`schemaForm === 'fallback'`),
+// while an installed profile copy reaches it through the running CLI
+// (`schemaForm === 'schemastery'` — verified in an isolated profile). Both forms
+// must therefore satisfy the same contract, and this test asserts only that
+// contract. `safeParse` is deliberately NOT part of it: the fallback happens to
+// provide it, the real schemastery does not, and asserting it here would have
+// tested the fallback's private surface instead of what the harness reads.
 
 test('Config satisfies every consumer the harness reads it through', () => {
-	assert.equal(schemaForm, 'fallback', 'this test is only meaningful while the fallback is what ships')
+	assert.ok(schemaForm === 'fallback' || schemaForm === 'schemastery', `unexpected schema form ${schemaForm}`)
 
 	// 1. Cordis: the Standard Schema interface.
 	assert.equal(Config['~standard'].version, 1)
@@ -1304,10 +1308,14 @@ test('Config satisfies every consumer the harness reads it through', () => {
 		assert.equal(typeof descriptor.dict, 'object')
 	}
 
-	// A surface may reach for a Zod-shaped parse; it must answer, not throw.
-	const parsed = Config.safeParse({ mode: 'digest' })
-	assert.equal(parsed.success, true)
-	assert.equal(parsed.data.mode, 'digest')
+	// A surface may reach for a Zod-shaped parse; if it is offered it must answer
+	// rather than throw. The real schemastery does not offer it, and nothing in the
+	// harness calls it, so its absence is not a defect.
+	if (typeof Config.safeParse === 'function') {
+		const parsed = Config.safeParse({ mode: 'digest' })
+		assert.equal(parsed.success, true)
+		assert.equal(parsed.data.mode, 'digest')
+	}
 })
 
 test('the resolver reaches schemastery through the harness when this file cannot', async () => {

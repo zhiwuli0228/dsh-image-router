@@ -61,6 +61,13 @@ jobs:
       # `Config` from a top-level await (the schema is dual-form), so it re-exports a
       # binding rather than declaring `export const Config` -- a text match reported
       # that as missing, and this job failed on every run since.
+      #
+      # The assertions are the contract BOTH schema forms satisfy. `safeParse` is not
+      # among them: the zero-dependency fallback happens to provide it but the real
+      # schemastery does not, so asserting it tested the fallback's private surface
+      # and would have failed in any environment that resolves schemastery. What the
+      # three consumers actually call is: Cordis -> `~standard.validate`, the settings
+      # service `resolve()` -> the schema itself, `describe()` -> `toJSON()`.
       - name: Check the entry exports
         run: |
           node --input-type=module -e "
@@ -69,9 +76,11 @@ jobs:
             if (mod.default !== undefined) throw new Error('a DSH plugin entry must not have a default export')
             if (mod.Config === undefined) throw new Error('the entry must export Config')
             if (typeof mod.apply !== 'function') throw new Error('the entry must export apply')
-            for (const method of ['toJSON', 'safeParse']) {
-              if (typeof mod.Config[method] !== 'function') throw new Error('Config must answer ' + method + '(), which the settings service calls')
-            }
+            if (typeof mod.Config !== 'function') throw new Error('Config must be callable: the settings service layers defaults by calling it')
+            if (typeof mod.Config.toJSON !== 'function') throw new Error('Config.toJSON must be callable: the settings page renders the field graph it returns')
+            if (typeof mod.Config['~standard']?.validate !== 'function') throw new Error('Config must answer ~standard.validate: the Cordis loader validates the deployment config with it')
+            const graph = mod.Config.toJSON()
+            if (graph === null || typeof graph !== 'object') throw new Error('Config.toJSON must return a field graph, not nothing')
             if (typeof mod.Config({ mode: 'digest' }) !== 'object') throw new Error('Config must be callable to layer defaults')
-            console.log('entry ok:', mod.name, '| schema form:', mod.schemaForm)
+            console.log('entry ok:', mod.name, '| schema form:', mod.schemaForm, '| contract: callable + toJSON + ~standard.validate')
           "

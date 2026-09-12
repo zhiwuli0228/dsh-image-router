@@ -2,7 +2,7 @@
 
 > [!IMPORTANT]
 > **当前版本 `0.4.3`，已发布到 npm，适配 DSH `0.1.5-rc.1+`（已在 `0.1.5-rc.1` 上真机验证）。**
-> 若你装到的是更早的 `0.1.0`，那是本插件的第一个（已废弃的）构建，会让「设置 → 模型」页加载失败 —— 用 `dsh plugin --profile web add dsh-image-router@latest` 明确装最新版即可。
+> 若你装到的是更早的 `0.1.0`，那是本插件的第一个（已废弃的）构建，会让「设置 → 模型」页加载失败 —— 显式装 `dsh plugin --profile web add dsh-image-router@0.4.3` 即可。
 
 <div align="center">
   <b style="font-size: 1.15em;">让纯文本模型也能「看图」</b><br />
@@ -79,8 +79,11 @@ dsh plugin --profile web add dsh-image-router && dsh web
 <summary><b>更新</b></summary>
 
 ```sh
-dsh plugin --profile web add dsh-image-router@latest
+# 显式写出版本号 —— 这是唯一可靠的更新方式，原因见下
+dsh plugin --profile web add dsh-image-router@0.4.3
 ```
+
+**为什么不用 `@latest`**：pnpm 11 自带**发布年龄门槛**（`minimumReleaseAge`）。刚发布的版本会被判为「太新」而不参与版本解析，于是 `add dsh-image-router@latest` 会打印 `Already up to date` 却**仍是旧版** —— 看起来像更新失败，其实是策略挡的。显式写出确切版本号时，pnpm 会把这个版本加进 profile 的 `pnpm-workspace.yaml` → `minimumReleaseAgeExclude` 并立即安装（它自己会打印一行 `Added 1 entry to minimumReleaseAgeExclude`），此后该版本就正常可见了。全新安装不受影响：它直接解析 `latest` 并自动加排除项。
 
 改完**硬刷新浏览器**（Ctrl/Cmd+Shift+R）。配置项的改动不需要重启（保存后下一次判定即生效）；插件**代码**的改动需要重启 `dsh web`。
 
