@@ -12,7 +12,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
 
-import { apply, Config, decideRoute, discoverVisionModels, modelAcceptsImages, nameLooksLikeImage, normalizeConfig, promptWantsVision, sameModel } from '../lib/index.js'
+import { apply, Config, decideRoute, discoverVisionModels, modelAcceptsImages, nameLooksLikeImage, normalizeConfig, promptWantsVision, sameModel, schemaForm } from '../lib/index.js'
 import { ENDPOINT_APIS, ENDPOINT_KEY_REF, ENDPOINT_PROVIDER, endpointSettingsOp, readEndpoint, routeForEndpoint, syncEndpoint } from '../lib/endpoint.js'
 
 const EXTENSIONS = ['png', 'jpg', 'jpeg', 'webp', 'gif']
@@ -1064,6 +1064,42 @@ test('discoverVisionModels answers empty without an llm service instead of throw
 	assert.deepEqual(await discoverVisionModels('anything', bare), [])
 	assert.deepEqual(await discoverVisionModels('anything', undefined), [])
 	assert.deepEqual(await discoverVisionModels('   ', { get: () => ({ listModels: async () => [] }) }), [])
+})
+
+// ── The schema contract every consumer reads ────────────────────────────────
+//
+// The deployment this plugin actually runs in resolves no schemastery from its
+// own directory (verified: `schemaForm === 'fallback'` both from the checkout and
+// from an installed profile copy), so `Config` IS the dependency-free fallback.
+// Three consumers read it, and the third is what broke a live boot.
+
+test('Config satisfies every consumer the harness reads it through', () => {
+	assert.equal(schemaForm, 'fallback', 'this test is only meaningful while the fallback is what ships')
+
+	// 1. Cordis: the Standard Schema interface.
+	assert.equal(Config['~standard'].version, 1)
+	assert.equal(typeof Config['~standard'].validate, 'function')
+
+	// 2. The settings service calls the schema to layer defaults (`resolve()`).
+	assert.equal(typeof Config, 'function')
+	const resolved = Config({ mode: 'switch' })
+	assert.equal(resolved.mode, 'switch', 'a supplied field survives resolution')
+	assert.equal(resolved.maxTokens, 900, 'documented defaults are materialized')
+	assert.equal(typeof Config().enabled, 'boolean')
+
+	// 3. `settings.describe()` calls `schema.toJSON()` for every registered
+	//    namespace. Without it the WHOLE provider/settings directory fails to load
+	//    ("加载提供方目录失败: registration.schema.toJSON is not a function") and no
+	//    plugin card renders at all — the live failure this guards.
+	assert.equal(typeof Config.toJSON, 'function')
+	const descriptor = Config.toJSON()
+	assert.ok(descriptor !== null && typeof descriptor === 'object')
+	assert.equal(descriptor.meta?.role, undefined, 'this namespace declares no secret field')
+
+	// A surface may reach for a Zod-shaped parse; it must answer, not throw.
+	const parsed = Config.safeParse({ mode: 'digest' })
+	assert.equal(parsed.success, true)
+	assert.equal(parsed.data.mode, 'digest')
 })
 
 // ── The write must not wreck a route the user also edits ────────────────────
