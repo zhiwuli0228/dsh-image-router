@@ -1421,7 +1421,7 @@ test('the settings composition base carries no credential', () => {
 	assert.equal(base.vision.endpoint.baseURL, 'https://gateway.example/v1', 'everything else about the endpoint survives')
 	assert.equal(base.vision.endpoint.model, 'my-vision-model')
 	assert.equal(base.vision.endpoint.apiKeyEnv, undefined, 'the default reference is materialized by the Host when it writes the route, not carried in the section')
-	assert.equal(base.vision.provider, ENDPOINT_PROVIDER)
+	assert.equal(base.vision.provider, undefined, 'the route derived from the endpoint is not restated beside it: an explicit route outranks the endpoint')
 
 	// An explicitly chosen reference does travel, because it is configuration.
 	const named = configBase(normalizeConfig({ vision: { endpoint: { ...ENDPOINT, apiKeyEnv: 'MY_GATEWAY_KEY', apiKey: 'sk-live-secret' } } }))
@@ -1431,6 +1431,48 @@ test('the settings composition base carries no credential', () => {
 	// The key is still what the endpoint tier writes to the credential store: the
 	// host keeps it in the live config, it is just never the section's base.
 	assert.equal(resolved.endpoint.apiKey, 'sk-live-secret')
+})
+
+test('the section base never states an endpoint route as an explicit choice', () => {
+	// The base is part of the value the host composes and hands back as the section.
+	// When it carried the RESOLVED route beside the endpoint, the section looked like
+	// "explicitly chose qwen-token-plan-cn/qwen3.8-flash AND configured an endpoint",
+	// and the explicit choice outranks the endpoint — so the configured endpoint was
+	// never used. Observed live as
+	// `visionKeys=provider,model,endpoint -> qwen-token-plan-cn/qwen3.8-flash` while
+	// the section's own file held only `endpoint`.
+	const composed = { mode: 'digest', vision: { provider: 'qwen-token-plan-cn', model: 'qwen3.8-flash' } }
+	const section = { vision: { endpoint: { baseURL: 'https://gateway.example/v1', model: 'qwen3.8-max', apiKey: 'sk-x', images: true } } }
+	const resolved = normalizeConfig({ ...composed, ...section })
+	assert.deepEqual(resolved.vision, { provider: ENDPOINT_PROVIDER, model: 'qwen3.8-max' }, 'the endpoint resolves to its own route')
+
+	const base = configBase(resolved)
+	assert.deepEqual(Object.keys(base.vision), ['endpoint'], 'the base names only the endpoint, never the route derived from it')
+	assert.equal(base.vision.endpoint.apiKey, undefined, 'and never the credential')
+
+	// Round-trip the way the host does: compose base with the user layer, then resolve.
+	const handedBack = normalizeConfig({ ...base, ...section })
+	assert.deepEqual(handedBack.vision, { provider: ENDPOINT_PROVIDER, model: 'qwen3.8-max' }, 'the composed section still resolves to the endpoint')
+
+	// With no endpoint the base must still carry the explicit route.
+	const routeOnly = configBase(normalizeConfig({ mode: 'digest', vision: { provider: 'huawei', model: 'glm-5.2' } }))
+	assert.deepEqual(routeOnly.vision, { provider: 'huawei', model: 'glm-5.2' })
+})
+
+test('an empty string is absent, not an explicit route', () => {
+	// A schema may materialize an unset optional string as `''`. Treating that as
+	// "present" made a route look explicitly chosen and silently outrank an endpoint.
+	const configured = normalizeConfig({
+		mode: 'digest',
+		vision: { provider: '', model: '', endpoint: { baseURL: 'https://gateway.example/v1', model: 'qwen3.8-max' } }
+	})
+	assert.equal(configured.vision.provider, ENDPOINT_PROVIDER, 'empty strings must not shadow the endpoint')
+	assert.equal(configured.vision.model, 'qwen3.8-max')
+	assert.equal(configured.problems, undefined, 'and they must not be reported as a validation failure')
+
+	// A half-filled explicit route is still malformed, and still refused.
+	const broken = normalizeConfig({ mode: 'digest', vision: { provider: 'huawei', model: '' } })
+	assert.ok(broken.problems?.some((problem) => problem.includes('vision.model')), 'a missing model is still refused')
 })
 
 test('the card never seeds its editor from a stored key', async () => {
