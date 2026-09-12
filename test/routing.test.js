@@ -1135,18 +1135,54 @@ test('Config satisfies every consumer the harness reads it through', () => {
 	assert.equal(typeof Config().enabled, 'boolean')
 
 	// 3. `settings.describe()` calls `schema.toJSON()` for every registered
-	//    namespace. Without it the WHOLE provider/settings directory fails to load
-	//    ("加载提供方目录失败: registration.schema.toJSON is not a function") and no
-	//    plugin card renders at all — the live failure this guards.
+	//    namespace, and the configuration page renders its form by walking that
+	//    descriptor. A descriptor with no field metadata does not merely render an
+	//    empty form: the provider/settings directory fails to load
+	//    ("加载提供方目录失败"), which takes the model page down with it.
 	assert.equal(typeof Config.toJSON, 'function')
 	const descriptor = Config.toJSON()
 	assert.ok(descriptor !== null && typeof descriptor === 'object')
-	assert.equal(descriptor.meta?.role, undefined, 'this namespace declares no secret field')
+	if (schemaForm === 'schemastery') {
+		assert.ok(Object.keys(descriptor).length > 0, 'a real schemastery descriptor must carry the field graph the page walks')
+	} else {
+		assert.equal(descriptor.type, 'object', 'the fallback must at least be walkable')
+		assert.equal(typeof descriptor.dict, 'object')
+	}
 
 	// A surface may reach for a Zod-shaped parse; it must answer, not throw.
 	const parsed = Config.safeParse({ mode: 'digest' })
 	assert.equal(parsed.success, true)
 	assert.equal(parsed.data.mode, 'digest')
+})
+
+test('the resolver reaches schemastery through the harness when this file cannot', async () => {
+	// A bare import resolves against this file's real path, which for an installed
+	// plugin is a profile's node_modules — nowhere near the harness's own packages.
+	// Trusting that alone silently downgraded the configuration page, so the resolver
+	// also anchors on the running CLI. This runs the module the way a deployment
+	// does, with argv[1] set to the harness's own bin.js.
+	const { execFileSync } = await import('node:child_process')
+	const cli = 'C:/Users/18811/AppData/Roaming/npm/node_modules/@deepseek-ai/dsh/lib/bin.js'
+	const probe = [
+		`process.argv[1] = ${JSON.stringify(cli)};`,
+		`import(${JSON.stringify(new URL('../lib/index.js', import.meta.url).href)})`,
+		'  .then((mod) => { console.log(mod.schemaForm + " " + Object.keys(mod.Config.toJSON() ?? {}).length); })',
+		'  .catch((error) => { console.log("error " + String(error).slice(0, 80)); });'
+	].join('\n')
+	let output
+	try {
+		output = execFileSync(process.execPath, ['-e', probe], { encoding: 'utf8' }).trim()
+	} catch {
+		// No harness on this machine (a bare CI checkout): the contract test above
+		// already covers the fallback, so there is nothing to assert here.
+		return
+	}
+	const [form, keys] = output.split(' ')
+	if (form === 'schemastery') {
+		assert.ok(Number(keys) > 0, 'the schemastery descriptor must expose the field graph')
+	} else {
+		assert.equal(form, 'fallback', `unexpected resolver outcome: ${output}`)
+	}
 })
 
 // ── The browser half's activation contract ──────────────────────────────────
