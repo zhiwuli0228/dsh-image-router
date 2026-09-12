@@ -126,7 +126,9 @@ describe_image(file_path: string, question?: string) -> string
 - 两半必须用同一个 namespace：宿主 `lib/settings.js` 的 `SETTINGS_NAMESPACE` 与浏览器 `client/client.js` 的 `NAMESPACE`。
 - 宿主侧只走 `ctx.inject(['settings'])` + `settings.register(ns, schema, { base })`：**绝不 import `@deepseek-ai/dsh-settings` 的命名导出** —— 上游删过 `installSettingsSection`，而缺失的命名导出是模块求值期 SyntaxError，会让宿主启动失败退出 1（dshmarket 踩过这个坑）。
 - 浏览器一半靠 `ctx.remote`（来自 `dsh-api-remotes`，已写进本包 `dsh.client.inject`）读取模型清单；没有远端服务的部署会退化成纯手填，卡片照常渲染。
-- 只有注册了命名空间**且**有浏览器一半注册 `settings.plugin.item` 卡片的插件才会出现在那个页面：两者缺一都不会渲染任何东西。
+- **浏览器一半的 `inject` 必须是空数组**，两个服务都靠可选注入拿：`ctx.inject(['slots','settingsScope'], …)`。`slots` 不是包名、也不在任何客户端清单里（它是隐式提供的服务），而**声明了加载器满足不了的依赖会让 entry 永久 pending 且毫无提示** —— `apply` 从不执行、卡片从不注册、页面什么都不显示、控制台一片干净。这正是本插件卡片长期不出现的两个原因之一（另一个是下面这条）。宿主半边用的是同一手法，所以薄部署也能激活。
+- 只有注册了命名空间**且**有浏览器一半注册 `settings.plugin.item` 卡片的插件才会出现在那个页面：两者缺一都不会渲染任何东西。该 tab 的实现是 `namespaces.map(ns => renderSlot('settings.plugin.item', {}, { entryKey: ns }))` —— 所以"宿主 serve 的命名空间"与"卡片 claim 的 key"必须完全一致。
+- **激活状态可观测**：浏览器里读 `window.__imageRouter` 会得到 `{applied, slots, scope, slotDispatched, registered, error}`，逐步说明走到了哪一步。这条路径上的失败方式全是静默的，所以状态必须可读、不能靠猜。
 
 ## 为什么需要它
 
@@ -163,7 +165,7 @@ digest 模式在**准入之前**就把图片换成文字，所以它同时绕过
 
 | 环节 | 结论 |
 |---|---|
-| 单测（digest 替换 / 失败保留 / 多图合并 / dryRun / 工具调用 / 设置覆盖 / 开关模式状态机 / 安全降级 / 审计 / 自定义端点档 / 图片能力 oracle / 上游 profile 合并 / schema 三方消费者契约） | ✅ 54 个用例通过 |
+| 单测（digest 替换 / 失败保留 / 多图合并 / dryRun / 工具调用 / 设置覆盖 / 开关模式状态机 / 安全降级 / 审计 / 自定义端点档 / 图片能力 oracle / 上游 profile 合并 / schema 三方消费者契约 / 浏览器半边激活契约） | ✅ 57 个用例通过 |
 | 挂载进真实 web-profile 树 | ✅ 隔离实例冷启动，审计写 `mounted mode=digest …` |
 | **标准 bundle 形态可装载**（包名进 `dsh.profile.bundles` → 包内 `dsh.bundle.patch` → 部署层 config 覆盖 → `Config` 补默认值） | ✅ 隔离实例冷启动实测，`schemastery` 与回退 Standard Schema 两条路径都跑过 |
 | 无 `sessionController` 的 profile 仍能启动 | ✅ headless 冷启动 `exit=0`，审计只有 `apply-entered` |
@@ -337,7 +339,7 @@ node test/routing.test.js    # 单进程直跑：没有管道支持的沙箱里�
 
 > `node --test test/` **不可移植**：Node 20 会扫描目录，Node 22+ 把 `test/` 当成单个入口文件去加载而报 `MODULE_NOT_FOUND`（CI 就是靠多版本矩阵抓到这个的）。
 
-54 个用例：配置归一化与校验（含旧模式名映射、schema 物化出的空对象/空数组、端点档补齐 vision 路由与两档优先级）、图片信号判定、digest 的替换/多图合并/失败保留/无图直通/dryRun/落盘失败、`describe_image` 的注册/读文件/问题透传/缺文件与目录与非图片的拒绝、设置节的注册与「保存后下一轮即生效」、校验失败的覆盖被忽略、自定义端点写入上游路由与凭据（含"跳过/失败不得记为已同步"这一可重试契约、以及"合并而非覆盖上游 profile"）、图片能力 oracle（声明优先于 id、按命名空间注册、过滤、未知路由不抛错、无 llm 服务时退化）、**schema 三方消费者契约（`~standard` / 可调用 / `toJSON`+`safeParse`）**、switch 的借出‑归还‑放弃状态机、手选模型不被覆盖、`holdTurns`、`sticky`、路由校验与缓存、冷会话不路由也不告警、门面两种布局、审计可写与不可写、无 `sessionController` 时不包装、卸载恢复。
+57 个用例：配置归一化与校验（含旧模式名映射、schema 物化出的空对象/空数组、端点档补齐 vision 路由与两档优先级）、图片信号判定、digest 的替换/多图合并/失败保留/无图直通/dryRun/落盘失败、`describe_image` 的注册/读文件/问题透传/缺文件与目录与非图片的拒绝、设置节的注册与「保存后下一轮即生效」、校验失败的覆盖被忽略、自定义端点写入上游路由与凭据（含"跳过/失败不得记为已同步"这一可重试契约、以及"合并而非覆盖上游 profile"）、图片能力 oracle（声明优先于 id、按命名空间注册、过滤、未知路由不抛错、无 llm 服务时退化）、**schema 三方消费者契约（`~standard` / 可调用 / `toJSON`+`safeParse`）**、**浏览器半边激活契约（`inject` 必须为空、以自己命名空间 claim card、服务缺席时干净降级）**、switch 的借出‑归还‑放弃状态机、手选模型不被覆盖、`holdTurns`、`sticky`、路由校验与缓存、冷会话不路由也不告警、门面两种布局、审计可写与不可写、无 `sessionController` 时不包装、卸载恢复。
 
 CI（`.github/workflows/ci.yml`）在 Ubuntu + Windows × Node 20/22/24 上跑同一套用例，并校验「`dsh.bundle.patch` 指向的文件存在、入口导出 `name`/`Config`/`apply`」这条打包契约。
 
