@@ -270,25 +270,30 @@ session=<id> error=<消息> at=<栈帧>                                         
 ```sh
 node --test                  # 标准写法（Node 自带发现，20/22/24 通用）
 node test/routing.test.js    # 单进程直跑：没有管道支持的沙箱里用这个
+node tools/check-contract.mjs   # 打包契约（CI 跑的就是它）
 ```
 
 > `node --test test/` **不可移植**：Node 20 会扫描目录，Node 22+ 把 `test/` 当成单个入口文件去加载而报 `MODULE_NOT_FOUND`。
 
+**打包契约**由 `tools/check-contract.mjs` 一处定义，`ci.yml` 与 `release.yml` 都调它，所以两边不会漂移、你也能跑 CI 跑的同一份。它守住四件事:① 声明的补丁文件存在;② 声明的浏览器一半存在;③ 入口导出满足 loader 消费的那套(含 `Config` 必须能答 Cordis 的 `~standard.validate`、settings 服务的调用与 `toJSON()` 字段图 —— 断言的是**两种 schema 形态都满足的契约**,`safeParse` 刻意不在其中,因为 fallback 有而真 schemastery 没有);④ **README 顶部那行版本号与 `package.json` 一致** —— 这两个文件靠人手同步,而 npm 页面显示一个、registry 服务另一个,除此之外没人会发现它们漂移。
+
 68 个用例：配置归一化与校验（含旧模式名映射、schema 物化出的空对象/空数组、端点档补齐 vision 路由与两档优先级）、图片信号判定、digest 的替换/多图合并/失败保留/无图直通/dryRun/落盘失败/完成块兜底/对象 finish 原因/预算被思考吃光后重试、`describe_image` 的注册/读文件/问题透传/拒绝路径、设置节的注册与「保存后下一轮即生效」、校验失败被忽略、自定义端点写入上游路由与凭据（含"跳过/失败不得记为已同步"的可重试契约、以及"合并而非覆盖上游 profile"）、图片能力 oracle、**schema 契约**、**浏览器半边激活契约**、**section base 不得遮蔽端点**、switch 的借出‑归还‑放弃状态机、`holdTurns`、`sticky`、冷会话不路由也不告警、审计可写与不可写、无 `sessionController` 时不包装、卸载恢复。
 
-CI（`.github/workflows/ci.yml`）在 Ubuntu + Windows × Node 20/22/24 上跑同一套用例，并校验「`dsh.bundle.patch` 指向的文件存在、入口导出 `name`/`Config`/`apply`」这条打包契约。
+CI（`.github/workflows/ci.yml`）在 Ubuntu + Windows × Node 20/22/24 上跑同一套用例，并跑上面那份打包契约。
 
 <details>
 <summary><b>仓库结构</b></summary>
 
 ```
-lib/index.js      宿主一半：配置归一化、准入前替换、describe_image、审计、端点档
-lib/endpoint.js   自定义端点档：翻译成上游 llm-pi-ai 路由 + 凭据
-lib/settings.js   设置命名空间注册
-client/client.js  浏览器一半：设置卡片（两档选择器、端点表单）
-cordis.patch.yml  包内补丁：只插入一条 loader 条目（部署无关）
-examples/         配置示例
-tools/            五个开发用探针（digest / tool / switch 序列 / 服务形状 / 调用链）
+lib/index.js             宿主一半：配置归一化、准入前替换、describe_image、审计、端点档
+lib/endpoint.js          自定义端点档：翻译成上游 llm-pi-ai 路由 + 凭据
+lib/settings.js          设置命名空间注册
+client/client.js         浏览器一半：设置卡片（两档选择器、端点表单）
+cordis.patch.yml         包内补丁：只插入一条 loader 条目（部署无关）
+examples/                配置示例
+tools/check-contract.mjs 打包契约（两个工作流共用）
+tools/release.mjs        发版准备：同步两处版本号 → 校验 → 提交 → 打 tag
+tools/*-probe.mjs        五个运行时探针（digest / tool / switch 序列 / 服务形状 / 调用链）
 ```
 
 </details>
@@ -296,18 +301,18 @@ tools/            五个开发用探针（digest / tool / switch 序列 / 服务
 ## 🤝 参与贡献
 
 - 改代码走 PR（`feat/*` / `fix/*`）；纯文档可直接推 `main`。
-- 提交前自检：`node --test`，并确认 README 里描述的行为与代码一致 —— 本仓库的约定是**每条实现要点都来自实测**，README 里的「已验证」表也是这么攒出来的。
+- 提交前自检：`node --test` 与 `node tools/check-contract.mjs`，并确认 README 里描述的行为与代码一致 —— 本仓库的约定是**每条实现要点都来自实测**，README 里的「已验证」表也是这么攒出来的。
 - 报 bug 时请附上审计文件里对应的那几行（`mounted` / `config-resolved` / `digest` 或 `digest-failed`）—— 这条链路上的失败方式大多是静默的，那几行是唯一可读的线索。
-- **发版由 CI 完成，不需要在本地发布**。改 `package.json` 的版本号（并同步 README 顶部那行）→ 提交 → 打 tag → 推 tag，剩下的交给 `.github/workflows/release.yml`：
+- **发版**：一条命令准备，一个 tag 发布。版本号写在两个文件里（`package.json` 与 README 顶部），`release.mjs` 会同时改掉、并在打 tag 前跑完契约检查与单测 —— **CI 会拒绝的东西，本地就先拒绝掉**：
 
   ```sh
-  # 1. 改版本号（package.json 与 README 顶部那行）
-  # 2. 提交
-  git commit -am "chore: release 0.4.4"
-  # 3. 打 tag 并推送 —— 这一步触发发布
-  git tag -a v0.4.4 -m "dsh-image-router 0.4.4"
-  git push origin main v0.4.4
+  node tools/release.mjs 0.4.5          # 改版本号 → 校验 → 提交 → 打 tag（不推送）
+  git push origin main v0.4.5           # 这一步触发发布
+  # 想一步到底：node tools/release.mjs 0.4.5 --push
+  # 只看会发生什么：node tools/release.mjs 0.4.5 --dry-run
   ```
+
+  它还会拦住几种"不可撤销"的情形：工作树脏（tag 会指向一个不存在的树）、版本号不递增、tag 已存在、该版本已在 npm 上（版本号不可覆盖）。`--push` 是**显式选填**的 —— 不可逆的那一步应该是决定,而不是某个参数的副作用。
 
   CI 会先跑单测与打包契约检查，再校验 **tag 与 `package.json` 版本一致**（不一致直接失败，避免把错版本发出去），然后发布到 npm 并创建 GitHub Release。用的是 npm **Trusted Publishing（OIDC）**：仓库里不存任何 token，也不需要交互式 2FA，npm 会为产物生成 provenance 签名。也可以在 Actions 页面手动触发，默认是 **dry run**（只打包校验、不发布）。
 - **发布是异步的**：`npm publish` 返回成功只代表 registry 受理了。packument 会先更新，tarball 与 `npm install` 可能还要几分钟才可用 —— 刚发完就装会看到 `ERR_PNPM_FETCH_404`，那是传播延迟，不是失败（本项目实测约 5 分钟）。
