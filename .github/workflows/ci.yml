@@ -21,10 +21,11 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node }}
-      # `node --test` runs each test file in a child process; the suite is also
-      # runnable in one process, which is what sandboxes without pipe support need.
+      # No path argument: Node's own discovery finds test/**/*.test.js on 20, 22
+      # and 24. A directory argument is NOT portable — Node 22+ takes `test/` as a
+      # single entry file and fails to load it, which is exactly what CI caught.
       - name: Run the suite
-        run: node --test test/
+        run: node --test
       - name: Run the suite in-process
         run: node test/routing.test.js
 

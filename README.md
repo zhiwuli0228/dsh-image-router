@@ -195,8 +195,11 @@ session=<id> error=<消息> at=<栈帧>                        # 插件内部异
 
 ```powershell
 cd <repo>
-node --test test/            # 或：node test/routing.test.js（无管道沙箱里用这个）
+node --test                  # 标准写法（Node 自带发现，20/22/24 通用）
+node test/routing.test.js    # 单进程直跑：没有管道支持的沙箱里用这个
 ```
+
+> `node --test test/` **不可移植**：Node 20 会扫描目录，Node 22+ 把 `test/` 当成单个入口文件去加载而报 `MODULE_NOT_FOUND`（CI 就是靠多版本矩阵抓到这个的）。
 
 33 个用例：配置归一化与校验（含旧模式名映射、schema 物化出的空对象/空数组）、图片信号判定、digest 的替换/多图合并/失败保留/无图直通/dryRun/落盘失败、`describe_image` 的注册/读文件/问题透传/缺文件与目录与非图片的拒绝、switch 的借出‑归还‑放弃状态机、手选模型不被覆盖、`holdTurns`、`sticky`、路由校验与缓存、冷会话不路由也不告警、门面两种布局、审计可写与不可写、无 `sessionController` 时不包装、卸载恢复。
 
