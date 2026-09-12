@@ -86,8 +86,8 @@ qwen-token-plan-cn / qwen3.8-flash   ← 一次旁路调用（不改会话路由
 
 几个值得知道的细节：
 
-- **`endpoint` 优先于 `provider/model`**；两者都在时用显式的 `provider/model`，所以老配置不会被动改变行为。
-- **API Key 是只写字段**：Host 收到后写进凭据库；**组合 base 与卡片草稿都会剥掉它**，所以它既不回显、也不写进本插件的配置、也不进 trace。这条是**实测修出来的** —— 早先的实现让 `describe()` 返回的已解析值带着密钥，明文于是落进了 `$DSH_HOME/settings.yaml` 的 `image-router.vision.endpoint.apiKey`。现在有两道独立防线：`configBase` 剥掉 `endpoint.apiKey`（设置节本身不可能持有密钥），卡片编辑器用 `withoutKey(...)` 播种（旧版本写下的密钥不会被回填进草稿，也就不会被下一次保存写回去）。
+- **端点优先于它旁边的 `provider/model`**：端点携带地址、模型与凭据，它的 model **就是**路由，所以它说了算。写在同一处的 `provider/model` 通常只是 profile 里那条默认路由的残留 —— 让残留胜出正是"卡片保存的端点被忽略"的成因。想用另一条路由，就在卡片里切回"使用已配置的模型"，那会把端点**清掉**（卡片保存用 `unset`，而不是仅仅不再提及），此时你的选择生效。三个档位的完整优先级：**设置节写了端点 → 端点赢；设置节写了路由 → 路由赢（即使默认配置带端点）；设置节两个都没写 → 用 profile 的默认配置**。合并 `vision` 时按字段进行，空值不覆盖有内容的值。
+- **API Key 是只写字段**：Host 收到后写进凭据库；**解析结果、组合 base 与卡片草稿都会剥掉它**，所以它既不回显、也不写进本插件的配置、也不进 trace。这条是**实测修出来的** —— 早先的实现让 `describe()` 返回的已解析值带着密钥，明文于是落进了 `$DSH_HOME/settings.yaml` 的 `image-router.vision.endpoint.apiKey`。现在有三道独立防线：`normalizeConfig` 从解析结果里剥掉 `endpoint.apiKey`（`env.config` 的任何读者都看不到密钥），`configBase` 不把它写进设置节，卡片编辑器用 `withoutKey(...)` 播种（旧版本写下的密钥不会被回填进草稿、也就不会被下一次保存写回去）。端点档写凭据时从**声明它的那一层**现场读取明文。
 - **凭据存成引用名**：`$DSH_HOME/.credentials.yaml` 的 `refs.IMAGE_ROUTER_VISION_API_KEY`（可用 `apiKeyEnv` 改名）。选引用名而不是泛型 key，是因为 pi-ai 解析 `apiKeyEnv` 走的正是这一层 —— `credentialRef(name)` → `ctx.credentials.resolve(...)`，与你原有的 `QWEN_TOKEN_PLAN_CN_API_KEY` 同一种形态；泛型 key 在这一层解析不到。
 - **别关掉「声明支持图片输入」**：pi-ai 对自定义路由的默认模态是 `["text"]`，关掉之后发过去的图片会被投影成占位文字，端点收不到图。
 - 想在**设置 → 模型**里管理这条路由也行：它就是一条普通的 `llm-pi-ai` 路由，`displayName`、超时、协议都能在那边继续改。
@@ -343,7 +343,7 @@ node test/routing.test.js    # 单进程直跑：没有管道支持的沙箱里�
 
 > `node --test test/` **不可移植**：Node 20 会扫描目录，Node 22+ 把 `test/` 当成单个入口文件去加载而报 `MODULE_NOT_FOUND`（CI 就是靠多版本矩阵抓到这个的）。
 
-61 个用例：配置归一化与校验（含旧模式名映射、schema 物化出的空对象/空数组、端点档补齐 vision 路由与两档优先级）、图片信号判定、digest 的替换/多图合并/失败保留/无图直通/dryRun/落盘失败、`describe_image` 的注册/读文件/问题透传/缺文件与目录与非图片的拒绝、设置节的注册与「保存后下一轮即生效」、校验失败的覆盖被忽略、自定义端点写入上游路由与凭据（含"跳过/失败不得记为已同步"这一可重试契约、以及"合并而非覆盖上游 profile"）、图片能力 oracle（声明优先于 id、按命名空间注册、过滤、未知路由不抛错、无 llm 服务时退化）、**schema 三方消费者契约（`~standard` / 可调用 / `toJSON`+`safeParse`）**、**浏览器半边激活契约（`inject` 必须为空、以自己命名空间 claim card、服务缺席时干净降级）**、switch 的借出‑归还‑放弃状态机、手选模型不被覆盖、`holdTurns`、`sticky`、路由校验与缓存、冷会话不路由也不告警、门面两种布局、审计可写与不可写、无 `sessionController` 时不包装、卸载恢复。
+65 个用例：配置归一化与校验（含旧模式名映射、schema 物化出的空对象/空数组、端点档补齐 vision 路由与两档优先级）、图片信号判定、digest 的替换/多图合并/失败保留/无图直通/dryRun/落盘失败、`describe_image` 的注册/读文件/问题透传/缺文件与目录与非图片的拒绝、设置节的注册与「保存后下一轮即生效」、校验失败的覆盖被忽略、自定义端点写入上游路由与凭据（含"跳过/失败不得记为已同步"这一可重试契约、以及"合并而非覆盖上游 profile"）、图片能力 oracle（声明优先于 id、按命名空间注册、过滤、未知路由不抛错、无 llm 服务时退化）、**schema 三方消费者契约（`~standard` / 可调用 / `toJSON`+`safeParse`）**、**浏览器半边激活契约（`inject` 必须为空、以自己命名空间 claim card、服务缺席时干净降级）**、switch 的借出‑归还‑放弃状态机、手选模型不被覆盖、`holdTurns`、`sticky`、路由校验与缓存、冷会话不路由也不告警、门面两种布局、审计可写与不可写、无 `sessionController` 时不包装、卸载恢复。
 
 CI（`.github/workflows/ci.yml`）在 Ubuntu + Windows × Node 20/22/24 上跑同一套用例，并校验「`dsh.bundle.patch` 指向的文件存在、入口导出 `name`/`Config`/`apply`」这条打包契约。
 
