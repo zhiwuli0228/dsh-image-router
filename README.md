@@ -165,7 +165,7 @@ digest 模式在**准入之前**就把图片换成文字，所以它同时绕过
 
 | 环节 | 结论 |
 |---|---|
-| 单测（digest 替换 / 失败保留 / 多图合并 / dryRun / 工具调用 / 设置覆盖 / 开关模式状态机 / 安全降级 / 审计 / 自定义端点档 / 图片能力 oracle / 上游 profile 合并 / schema 三方消费者契约 / 浏览器半边激活契约） | ✅ 57 个用例通过 |
+| 单测（digest 替换 / 失败保留 / 多图合并 / dryRun / 工具调用 / 设置覆盖 / 开关模式状态机 / 安全降级 / 审计 / 自定义端点档 / 图片能力 oracle / 上游 profile 合并 / schema 三方消费者契约 / 浏览器半边激活契约） | ✅ 59 个用例通过 |
 | 挂载进真实 web-profile 树 | ✅ 隔离实例冷启动，审计写 `mounted mode=digest …` |
 | **标准 bundle 形态可装载**（包名进 `dsh.profile.bundles` → 包内 `dsh.bundle.patch` → 部署层 config 覆盖 → `Config` 补默认值） | ✅ 隔离实例冷启动实测，`schemastery` 与回退 Standard Schema 两条路径都跑过 |
 | 无 `sessionController` 的 profile 仍能启动 | ✅ headless 冷启动 `exit=0`，审计只有 `apply-entered` |
@@ -271,19 +271,23 @@ dsh plugin --profile web add file:E:\path\to\dsh-image-router
 
 ### 为什么包内不需要 `node_modules`
 
-`Config` 采用双形态：能解析 `@deepseek-ai/schemastery` 时用它；解析不到则退回一个零依赖的等价实现。**而后者才是实际发布出去的那一份** —— 这个 `import` 从本文件自己的位置解析，宿主的 `node_modules` 在 DSH 安装目录里、不在 profile 往上的解析路径上；实测在真实 profile 中（插件以 `file:` 装进 profile）`schemaForm` 恒为 `'fallback'`。
+`Config` 采用双形态：能解析 `@deepseek-ai/schemastery` 时用它；解析不到则退回一个零依赖的等价实现。
 
-所以回退形态必须同时满足**三个**消费者，缺任何一个都会在真机上炸：
+**解析是"多锚点"的**，这点是踩过坑才定下来的：裸 `import` 从本文件自己的位置解析，而插件装进 profile 后，宿主的 `node_modules` 在 DSH 安装目录里、不在 profile 往上的解析路径上 —— 只靠它就会**静默退回回退形态**。所以解析顺序是：① 本文件位置；② 运行中的 CLI（`process.argv[1]` → 宿主包根目录，以及其上的 npm 全局根）。实测在本部署里②命中，审计的 `apply-entered` 行会打出 `schema=schemastery`。
+
+**为什么非要用真 schemastery**：回退形态够用于激活和 settings 服务的 `resolve()`，但**不够用于设置界面本身**。设置页是通过遍历 `schema.toJSON()` 来渲染表单与提供方目录的 —— 实测一个"字段图为空"的描述会让**模型页整体加载失败**（`填入各提供方的 API 密钥即可使用其模型` 那类界面出不来）。真 schemastery 的 `toJSON()` 给出 `{uid, refs}` 共 31 个 ref 的完整字段图。
+
+回退形态仍必须同时满足**三个**消费者，缺任何一个都会在真机上炸：
 
 | 消费者 | 要什么 | 缺了的后果 |
 |---|---|---|
 | Cordis（loader） | `~standard.validate`（Standard Schema 接口，`cordis/lib/index.js`：`runtime.Config['~standard'].validate(config)`） | 启动失败 |
 | settings 服务 `resolve()` | schema **可调用** —— 它直接 `schema(mergeLayers(base, section))` 来叠默认值 | 设置节解析抛 `TypeError: schema is not a function` |
-| settings 服务 `describe()` | `schema.toJSON()` | **整个提供方/设置目录加载失败**，于是所有插件卡片都不渲染（实测报错：`加载提供方目录失败: registration.schema.toJSON is not a function`） |
+| settings 服务 `describe()` | 可调用的 `schema.toJSON()`，且**字段图非空** | 提供方/设置目录加载失败 → 所有插件卡片与模型页都不渲染（实测报错：`加载提供方目录失败: registration.schema.toJSON is not a function`，以及后续的模型页加载失败） |
 
 `redactSecrets` 的遍历是防御式的（`node.type` 不认识就原样返回值），所以回退形态不需要 schemastery 的元数据即可安全通过。
 
-插件会在审计的 `apply-entered` 行打出 `schema=fallback|schemastery` —— 这两种形态从外面看不出区别，而"我这儿跑的到底是哪一份"曾是定位真机故障时最难的一环。`@deepseek-ai/schemastery` 因此声明为**可选 peerDependency**（不拉取、用宿主自带），见 `package.json`。
+`@deepseek-ai/schemastery` 因此声明为**可选 peerDependency**（不拉取、用宿主自带），见 `package.json`。
 
 ## 配置项
 
@@ -339,7 +343,7 @@ node test/routing.test.js    # 单进程直跑：没有管道支持的沙箱里�
 
 > `node --test test/` **不可移植**：Node 20 会扫描目录，Node 22+ 把 `test/` 当成单个入口文件去加载而报 `MODULE_NOT_FOUND`（CI 就是靠多版本矩阵抓到这个的）。
 
-57 个用例：配置归一化与校验（含旧模式名映射、schema 物化出的空对象/空数组、端点档补齐 vision 路由与两档优先级）、图片信号判定、digest 的替换/多图合并/失败保留/无图直通/dryRun/落盘失败、`describe_image` 的注册/读文件/问题透传/缺文件与目录与非图片的拒绝、设置节的注册与「保存后下一轮即生效」、校验失败的覆盖被忽略、自定义端点写入上游路由与凭据（含"跳过/失败不得记为已同步"这一可重试契约、以及"合并而非覆盖上游 profile"）、图片能力 oracle（声明优先于 id、按命名空间注册、过滤、未知路由不抛错、无 llm 服务时退化）、**schema 三方消费者契约（`~standard` / 可调用 / `toJSON`+`safeParse`）**、**浏览器半边激活契约（`inject` 必须为空、以自己命名空间 claim card、服务缺席时干净降级）**、switch 的借出‑归还‑放弃状态机、手选模型不被覆盖、`holdTurns`、`sticky`、路由校验与缓存、冷会话不路由也不告警、门面两种布局、审计可写与不可写、无 `sessionController` 时不包装、卸载恢复。
+59 个用例：配置归一化与校验（含旧模式名映射、schema 物化出的空对象/空数组、端点档补齐 vision 路由与两档优先级）、图片信号判定、digest 的替换/多图合并/失败保留/无图直通/dryRun/落盘失败、`describe_image` 的注册/读文件/问题透传/缺文件与目录与非图片的拒绝、设置节的注册与「保存后下一轮即生效」、校验失败的覆盖被忽略、自定义端点写入上游路由与凭据（含"跳过/失败不得记为已同步"这一可重试契约、以及"合并而非覆盖上游 profile"）、图片能力 oracle（声明优先于 id、按命名空间注册、过滤、未知路由不抛错、无 llm 服务时退化）、**schema 三方消费者契约（`~standard` / 可调用 / `toJSON`+`safeParse`）**、**浏览器半边激活契约（`inject` 必须为空、以自己命名空间 claim card、服务缺席时干净降级）**、switch 的借出‑归还‑放弃状态机、手选模型不被覆盖、`holdTurns`、`sticky`、路由校验与缓存、冷会话不路由也不告警、门面两种布局、审计可写与不可写、无 `sessionController` 时不包装、卸载恢复。
 
 CI（`.github/workflows/ci.yml`）在 Ubuntu + Windows × Node 20/22/24 上跑同一套用例，并校验「`dsh.bundle.patch` 指向的文件存在、入口导出 `name`/`Config`/`apply`」这条打包契约。
 
