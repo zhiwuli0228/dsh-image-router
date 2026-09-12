@@ -1,7 +1,7 @@
 # dsh-image-router
 
 > [!IMPORTANT]
-> **当前版本 `0.4.2`，已发布到 npm，适配 DSH `0.1.5-rc.1+`（已在 `0.1.5-rc.1` 上真机验证）。**
+> **当前版本 `0.4.3`，已发布到 npm，适配 DSH `0.1.5-rc.1+`（已在 `0.1.5-rc.1` 上真机验证）。**
 > 若你装到的是更早的 `0.1.0`，那是本插件的第一个（已废弃的）构建，会让「设置 → 模型」页加载失败 —— 用 `dsh plugin --profile web add dsh-image-router@latest` 明确装最新版即可。
 
 <div align="center">
