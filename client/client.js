@@ -587,22 +587,75 @@ window.__ModuleLoader__.load({
 		}
 
 		const name = 'image-router'
-		const inject = ['slots']
+
+		/**
+		 * Deliberately empty.
+		 *
+		 * An earlier version declared `['slots']`, copied from another plugin's
+		 * browser half. `slots` is not a package name and appears in no client
+		 * manifest, so it is an implicitly provided service — and a declared
+		 * dependency the loader cannot satisfy leaves the entry **pending forever**,
+		 * silently: `apply` never runs and the card never registers. This half needs
+		 * nothing at activation time anyway; both services it uses are reached
+		 * through optional injection below, the same shape the Host half uses so a
+		 * thin deployment still activates.
+		 */
+		const inject = []
+
+		/**
+		 * Activation report, readable as `window.__imageRouter` in the browser.
+		 *
+		 * The failure modes here are silent by nature — a pending entry and a card
+		 * that never rendered both look like "the option is missing" with a clean
+		 * console. This records which step was reached so that state is observable
+		 * instead of inferred.
+		 */
+		const report = { applied: false, slots: false, scope: false, registered: false, error: undefined }
+		const publish = () => {
+			try {
+				window.__imageRouter = report
+			} catch {
+				/* a frozen global must not break activation */
+			}
+		}
 
 		function apply(ctx) {
+			report.applied = true
+			report.hasCtx = ctx !== null && typeof ctx === 'object'
+			report.ctxSlots = report.hasCtx ? ctx.slots !== undefined : false
+			publish()
 			try {
-				ctx.inject(['settingsScope'], (scoped) => {
+				// Optional injection of BOTH services: neither is a package, and a
+				// required one would leave this entry pending without a word.
+				ctx.inject(['slots', 'settingsScope'], (scoped) => {
+					report.slots = scoped.slots !== undefined
+					report.scope = scoped.settingsScope !== undefined
+					publish()
+					if (scoped.slots === undefined || scoped.settingsScope === undefined) {
+						report.error = 'slots or settingsScope unavailable'
+						publish()
+						console.warn('[image-router] settings card unavailable:', report.error)
+						return
+					}
 					const scope = scoped.settingsScope.bind({ namespace: NAMESPACE })
 					// `remote` is the Typert Remote namespace table (declared in this
 					// package's `dsh.client.inject`). It is read lazily inside the card so
 					// a deployment that mounts no API-remotes plugin still renders — with
 					// manual entry instead of the model picker.
-					scoped.slots.inject('settings.plugin.item', () => scoped.slots.register(
-						{ name: 'settings.plugin.item', key: NAMESPACE },
-						() => h(Card, { scope, remote: ctx.remote })
-					))
+					scoped.slots.inject('settings.plugin.item', () => {
+						report.slotDispatched = true
+						publish()
+						scoped.slots.register(
+							{ name: 'settings.plugin.item', key: NAMESPACE },
+							() => h(Card, { scope, remote: ctx.remote })
+						)
+						report.registered = true
+						publish()
+					})
 				})
 			} catch (error) {
+				report.error = String(error)
+				publish()
 				console.warn('[image-router] settings card unavailable:', error)
 			}
 		}

@@ -1178,9 +1178,38 @@ test('the browser half activates and registers its card', () => {
 	}
 	module.apply({ remote: {}, inject: (names, callback) => { injected = names; callback(scoped) } })
 
-	assert.deepEqual(injected, ['settingsScope'], 'the card needs only the settings scope')
+	assert.deepEqual(module.inject, [], 'the browser half must declare no required service: an unsatisfiable declaration leaves the entry pending forever, silently')
+	assert.deepEqual(injected, ['slots', 'settingsScope'], 'both services are reached through optional injection instead')
 	assert.deepEqual(registered, ['inject:settings.plugin.item', 'register:settings.plugin.item:image-router'], 'the card is claimed under the namespace the Host serves, or the tab dispatches nothing')
 	assert.equal(bound.namespace, 'image-router', 'both halves must spell the same namespace')
+})
+
+test('the browser half degrades when a service never arrives', () => {
+	// Optional injection means the callback simply never runs. That must be a
+	// clean no-op, not a throw that could take the shell down.
+	const source = readFileSync(new URL('../client/client.js', import.meta.url), 'utf8')
+	let entry
+	new Function('window', source)({ __ModuleLoader__: { load: (value) => { entry = value } } })
+	const React = {
+		createElement: () => null,
+		useState: (initial) => [initial, () => {}],
+		useEffect: () => {},
+		useCallback: (fn) => fn,
+		useSyncExternalStore: (_s, snapshot) => snapshot(),
+		useMemo: (fn) => fn()
+	}
+	const module = entry.factory((name) => (name === 'react' ? React : (() => { throw new Error(name) })()))
+	module.apply({ remote: {}, inject: () => {} })
+	// A callback that does fire without the services must not throw either.
+	let warned = 0
+	const originalWarn = console.warn
+	console.warn = () => { warned++ }
+	try {
+		module.apply({ remote: {}, inject: (_names, callback) => callback({}) })
+	} finally {
+		console.warn = originalWarn
+	}
+	assert.equal(warned, 1, 'an unusable scope is reported once, not thrown')
 })
 
 // ── The write must not wreck a route the user also edits ────────────────────
