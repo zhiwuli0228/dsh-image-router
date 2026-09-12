@@ -2,7 +2,7 @@
 
 > [!IMPORTANT]
 > **当前版本 `0.4.3`，已发布到 npm，适配 DSH `0.1.5-rc.1+`（已在 `0.1.5-rc.1` 上真机验证）。**
-> 若你装到的是更早的 `0.1.0`，那是本插件的第一个（已废弃的）构建，会让「设置 → 模型」页加载失败 —— 显式装 `dsh plugin --profile web add dsh-image-router@0.4.3` 即可。
+> 若你装到的是更早的 `0.1.0`，那是本插件的第一个（已废弃的）构建，会让「设置 → 模型」页加载失败 —— 用 `dsh plugin --profile web add dsh-image-router@latest` 直接装最新版即可。
 
 <div align="center">
   <b style="font-size: 1.15em;">让纯文本模型也能「看图」</b><br />
@@ -10,6 +10,7 @@
   <a href="https://www.npmjs.com/package/dsh-image-router"><img alt="npm version" src="https://img.shields.io/npm/v/dsh-image-router" /></a>
   <a href="https://www.npmjs.com/package/dsh-image-router"><img alt="npm downloads" src="https://img.shields.io/npm/dm/dsh-image-router" /></a>
   <a href="https://github.com/zhiwuli0228/dsh-image-router/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/zhiwuli0228/dsh-image-router/actions/workflows/ci.yml/badge.svg" /></a>
+  <a href="https://github.com/zhiwuli0228/dsh-image-router/actions/workflows/release.yml"><img alt="release" src="https://github.com/zhiwuli0228/dsh-image-router/actions/workflows/release.yml/badge.svg" /></a>
   <a href="https://opensource.org/licenses/MIT"><img alt="License: MIT" src="https://img.shields.io/badge/License-MIT-yellow.svg" /></a>
   <a href="https://github.com/zhiwuli0228/dsh-image-router/stargazers"><img alt="GitHub stars" src="https://img.shields.io/github/stars/zhiwuli0228/dsh-image-router" /></a><br /><br />
   <a href="https://www.npmjs.com/package/@deepseek-ai/dsh?activeTab=versions"><img alt="支持的 DSH 版本：0.1.5-rc.1+（已在 rc.1 验证）" src="https://img.shields.io/badge/DSH-0.1.5--rc.1%2B_%28verified_rc.1%29-4d6bfe" /></a>
@@ -79,11 +80,15 @@ dsh plugin --profile web add dsh-image-router && dsh web
 <summary><b>更新</b></summary>
 
 ```sh
-# 显式写出版本号 —— 这是唯一可靠的更新方式，原因见下
-dsh plugin --profile web add dsh-image-router@0.4.3
+# 装/升到最新版
+dsh plugin --profile web add dsh-image-router@latest
 ```
 
-**为什么不用 `@latest`**：pnpm 11 自带**发布年龄门槛**（`minimumReleaseAge`）。刚发布的版本会被判为「太新」而不参与版本解析，于是 `add dsh-image-router@latest` 会打印 `Already up to date` 却**仍是旧版** —— 看起来像更新失败，其实是策略挡的。显式写出确切版本号时，pnpm 会把这个版本加进 profile 的 `pnpm-workspace.yaml` → `minimumReleaseAgeExclude` 并立即安装（它自己会打印一行 `Added 1 entry to minimumReleaseAgeExclude`），此后该版本就正常可见了。全新安装不受影响：它直接解析 `latest` 并自动加排除项。
+**若它打印 `Already up to date` 却仍是旧版**：pnpm 11 的**发布年龄门槛**（`minimumReleaseAge`）把「刚发布不久」的版本排除在版本解析之外。**全新安装不受影响**（pnpm 会把该版本自动加进排除项，实测发布 20 分钟后 `@latest` 即可装到），但**升级已有依赖**时会把新版本滤掉、解析回旧版 —— 看起来像更新失败，其实是策略挡的。这时显式写出版本号即可，pnpm 会打印 `Added 1 entry to minimumReleaseAgeExclude` 并立即安装：
+
+```sh
+dsh plugin --profile web add dsh-image-router@0.4.3
+```
 
 改完**硬刷新浏览器**（Ctrl/Cmd+Shift+R）。配置项的改动不需要重启（保存后下一次判定即生效）；插件**代码**的改动需要重启 `dsh web`。
 
@@ -293,7 +298,19 @@ tools/            五个开发用探针（digest / tool / switch 序列 / 服务
 - 改代码走 PR（`feat/*` / `fix/*`）；纯文档可直接推 `main`。
 - 提交前自检：`node --test`，并确认 README 里描述的行为与代码一致 —— 本仓库的约定是**每条实现要点都来自实测**，README 里的「已验证」表也是这么攒出来的。
 - 报 bug 时请附上审计文件里对应的那几行（`mounted` / `config-resolved` / `digest` 或 `digest-failed`）—— 这条链路上的失败方式大多是静默的，那几行是唯一可读的线索。
-- **发版**：`npm version patch|minor` → 推 tag → 在仓库目录跑 `npm publish --access public`（账号是 `auth-and-writes` 2FA，需要交互式终端完成浏览器授权）。npm 对上传是**异步受理**：`PUT 202` 之后 packument 会先更新，tarball 与 `npm install` 可能还要几分钟才可用 —— 刚发完就装会看到 `ERR_PNPM_FETCH_404`，那是传播延迟，不是失败。
+- **发版由 CI 完成，不需要在本地发布**。改 `package.json` 的版本号（并同步 README 顶部那行）→ 提交 → 打 tag → 推 tag，剩下的交给 `.github/workflows/release.yml`：
+
+  ```sh
+  # 1. 改版本号（package.json 与 README 顶部那行）
+  # 2. 提交
+  git commit -am "chore: release 0.4.4"
+  # 3. 打 tag 并推送 —— 这一步触发发布
+  git tag -a v0.4.4 -m "dsh-image-router 0.4.4"
+  git push origin main v0.4.4
+  ```
+
+  CI 会先跑单测与打包契约检查，再校验 **tag 与 `package.json` 版本一致**（不一致直接失败，避免把错版本发出去），然后发布到 npm 并创建 GitHub Release。用的是 npm **Trusted Publishing（OIDC）**：仓库里不存任何 token，也不需要交互式 2FA，npm 会为产物生成 provenance 签名。也可以在 Actions 页面手动触发，默认是 **dry run**（只打包校验、不发布）。
+- **发布是异步的**：`npm publish` 返回成功只代表 registry 受理了。packument 会先更新，tarball 与 `npm install` 可能还要几分钟才可用 —— 刚发完就装会看到 `ERR_PNPM_FETCH_404`，那是传播延迟，不是失败（本项目实测约 5 分钟）。
 
 ## 🧩 工作原理
 
