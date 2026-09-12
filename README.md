@@ -137,6 +137,15 @@ dsh plugin --profile web add github:zhiwuli0228/dsh-image-router
 #        vision: { provider: <provider>, model: <vision-model> }
 ```
 
+没有 GitHub 网络时用本地 checkout（等价形态，pnpm 会把包拷进 profile 的 `node_modules`）：
+
+```powershell
+dsh plugin --profile web add file:E:\path\to\dsh-image-router
+# 之后同样加进 dsh.profile.bundles，并在 profile 的 cordis.patch.yml 写同 id 的配置覆盖
+```
+
+装好后这些配置项也能在 **设置 → 插件 → 插件配置** 的卡片里改（见下），保存即时生效。
+
 然后重启 `dsh web`。
 
 ### B. 本地开发 / 不想装依赖：按路径挂载
