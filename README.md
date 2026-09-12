@@ -1,7 +1,7 @@
 # dsh-image-router
 
 > [!IMPORTANT]
-> **当前版本 `0.4.3`，已发布到 npm，适配 DSH `0.1.5-rc.1+`（已在 `0.1.5-rc.1` 上真机验证）。**
+> **当前版本 `0.4.4`，已发布到 npm，适配 DSH `0.1.5-rc.1+`（已在 `0.1.5-rc.1` 上真机验证）。**
 > 若你装到的是更早的 `0.1.0`，那是本插件的第一个（已废弃的）构建，会让「设置 → 模型」页加载失败 —— 用 `dsh plugin --profile web add dsh-image-router@latest` 直接装最新版即可。
 
 <div align="center">
@@ -87,7 +87,7 @@ dsh plugin --profile web add dsh-image-router@latest
 **若它打印 `Already up to date` 却仍是旧版**：pnpm 11 的**发布年龄门槛**（`minimumReleaseAge`）把「刚发布不久」的版本排除在版本解析之外。**全新安装不受影响**（pnpm 会把该版本自动加进排除项，实测发布 20 分钟后 `@latest` 即可装到），但**升级已有依赖**时会把新版本滤掉、解析回旧版 —— 看起来像更新失败，其实是策略挡的。这时显式写出版本号即可，pnpm 会打印 `Added 1 entry to minimumReleaseAgeExclude` 并立即安装：
 
 ```sh
-dsh plugin --profile web add dsh-image-router@0.4.3
+dsh plugin --profile web add dsh-image-router@<版本号>
 ```
 
 改完**硬刷新浏览器**（Ctrl/Cmd+Shift+R）。配置项的改动不需要重启（保存后下一次判定即生效）；插件**代码**的改动需要重启 `dsh web`。
