@@ -12,7 +12,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
 
-import { apply, decideRoute, nameLooksLikeImage, normalizeConfig, promptWantsVision, sameModel } from '../lib/index.js'
+import { apply, Config, decideRoute, nameLooksLikeImage, normalizeConfig, promptWantsVision, sameModel } from '../lib/index.js'
 
 const EXTENSIONS = ['png', 'jpg', 'jpeg', 'webp', 'gif']
 const VISION = { provider: 'qwen-token-plan-cn', model: 'qwen3.8-flash' }
@@ -23,7 +23,7 @@ const IMAGE = [{ type: 'text', text: '读一下' }, WIRE_IMAGE]
 const PLAIN = [{ type: 'text', text: 'plain question' }]
 
 /** Minimal ctx double recording logger calls and collecting effects. */
-function fakeContext(controller, llm, { controllerAvailable = true, attachments, fs, tools } = {}) {
+function fakeContext(controller, llm, { controllerAvailable = true, attachments, fs, tools, settings } = {}) {
 	const logs = { info: [], warn: [] }
 	const disposers = []
 	const injected = []
@@ -32,12 +32,14 @@ function fakeContext(controller, llm, { controllerAvailable = true, attachments,
 		disposers,
 		injected,
 		tools,
+		settings,
 		sessionController: controllerAvailable ? controller : undefined,
 		get: (key) => {
 			if (key === 'llm') return llm
 			if (key === 'attachments') return attachments
 			if (key === 'fs') return fs
 			if (key === 'tools') return tools
+			if (key === 'settings') return settings
 			return undefined
 		},
 		logger: {
@@ -53,6 +55,7 @@ function fakeContext(controller, llm, { controllerAvailable = true, attachments,
 			const available = names.every((name) => {
 				if (name === 'sessionController') return controllerAvailable
 				if (name === 'tools') return tools !== undefined
+				if (name === 'settings') return settings !== undefined
 				return true
 			})
 			if (available) callback(ctx)
@@ -602,7 +605,7 @@ test('apply activates without a session controller and never wraps the prompt th
 	const ctx = fakeContext(controller, undefined, { controllerAvailable: false })
 	apply(ctx, { vision: VISION })
 
-	assert.deepEqual(ctx.injected, ['tools', 'sessionController'], 'every service is requested optionally, never as a required dependency')
+	assert.deepEqual(ctx.injected, ['tools', 'settings', 'sessionController'], 'every service is requested optionally, never as a required dependency')
 	assert.equal(controller.prompt, original, 'nothing is wrapped when the service is absent')
 	assert.equal(ctx.logs.warn.length, 0)
 	await controller.prompt({ sessionId: 's1', content: IMAGE })
@@ -712,12 +715,80 @@ test('apply registers no tool when disabled, and tolerates a deployment without 
 	const disabled = fakeContext(fakeController(), fakeLlm(), { tools: disabledTools, attachments: fakeAttachments(), fs: fakeFs() })
 	apply(disabled, { vision: VISION, tool: false })
 	assert.equal(disabledTools.registered.length, 0)
-	assert.deepEqual(disabled.injected, ['sessionController'], 'a disabled tool is not even requested')
+	assert.deepEqual(disabled.injected, ['settings', 'sessionController'], 'a disabled tool is not even requested')
 
 	const bare = fakeContext(fakeController(), fakeLlm(), { attachments: fakeAttachments(), fs: fakeFs() })
 	apply(bare, { vision: VISION })
-	assert.deepEqual(bare.injected, ['tools', 'sessionController'], 'the tool service is requested optionally, so its absence cannot fail the mount')
+	assert.deepEqual(bare.injected, ['tools', 'settings', 'sessionController'], 'the tool and settings services are requested optionally, so their absence cannot fail the mount')
 	assert.equal(bare.logs.warn.length, 0)
+})
+
+/** Settings-service double: one namespace whose live value object the test can save into. */
+function fakeSettings(initial = {}) {
+	const state = { value: initial, watchers: [] }
+	return {
+		state,
+		namespace: undefined,
+		schema: undefined,
+		options: undefined,
+		register(namespace, schema, options) {
+			this.namespace = namespace
+			this.schema = schema
+			this.options = options
+			return {
+				get: () => state.value,
+				watch: (listener) => {
+					state.watchers.push(listener)
+				}
+			}
+		},
+		/** Simulate a save from the plugin configuration page. */
+		save(patch) {
+			state.value = { ...state.value, ...patch }
+			for (const listener of state.watchers) listener()
+		}
+	}
+}
+
+test('apply registers the editable settings namespace and honours a saved override', async () => {
+	const controller = fakeController({ noSelectionApi: true })
+	const llm = fakeLlm()
+	const settings = fakeSettings()
+	const ctx = fakeContext(controller, llm, { attachments: fakeAttachments(), settings })
+	apply(ctx, { vision: VISION, imageExtensions: EXTENSIONS })
+
+	assert.equal(settings.namespace, 'image-router', 'the card on the browser side keys to this namespace')
+	assert.equal(settings.schema, Config, 'the same schema validates the section and the loader config')
+	assert.equal(settings.options.base.vision.provider, VISION.provider, 'the composed config is the section base, so the card shows the values in force')
+
+	await controller.prompt({ sessionId: 's1', content: IMAGE })
+	assert.equal(llm.calls[0].provider, VISION.provider)
+
+	// A save on the plugin configuration page must reach the NEXT decision, with no
+	// remount and no restart.
+	settings.save({ vision: { provider: 'other-route', model: 'other-vision' }, instruction: '只转录文字' })
+	await controller.prompt({ sessionId: 's1', content: IMAGE })
+	assert.equal(llm.calls[1].provider, 'other-route')
+	assert.equal(llm.calls[1].model, 'other-vision')
+	assert.equal(llm.calls[1].messages[0].content[0].text, '只转录文字', 'the saved instruction replaces the composed one')
+	assert.equal(controller.calls.length, 0, 'a settings save never touches the session model either')
+})
+
+test('apply ignores a settings override that does not validate', async () => {
+	const controller = fakeController({ noSelectionApi: true })
+	const llm = fakeLlm()
+	const settings = fakeSettings()
+	const trace = join(mkdtempSync(join(tmpdir(), 'image-router-invalid-')), 'trace.log')
+	const ctx = fakeContext(controller, llm, { attachments: fakeAttachments(), settings })
+	apply(ctx, { vision: VISION, traceFile: trace })
+
+	settings.save({ mode: 5, maxTokens: 0 })
+	await controller.prompt({ sessionId: 's1', content: IMAGE })
+
+	assert.equal(llm.calls.length, 1, 'routing keeps working on the last good configuration')
+	assert.equal(llm.calls[0].provider, VISION.provider)
+	assert.ok(readFileSync(trace, 'utf8').includes('settings-invalid'), 'the rejected override is audited')
+	rmSync(join(trace, '..'), { recursive: true, force: true })
 })
 
 test('apply restores the original prompt when the plugin is disposed', () => {

@@ -50,5 +50,12 @@ jobs:
             for (const token of ['export const name', 'export const Config', 'export function apply']) {
               if (!entry.includes(token)) throw new Error('lib/index.js is missing ' + token)
             }
+            // A declared browser half must export a bundle dsh-client-modules can
+            // read, which is exactly the check it throws on at runtime.
+            if (manifest.dsh?.client !== undefined) {
+              const client = manifest.exports?.['./client']
+              if (typeof client !== 'string') throw new Error('dsh.client requires a string exports["./client"]')
+              readFileSync(client, 'utf8')
+            }
             console.log('manifest ok:', manifest.name, manifest.version, '->', patch)
           "

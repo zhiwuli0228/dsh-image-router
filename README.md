@@ -44,6 +44,21 @@ describe_image(file_path: string, question?: string) -> string
 - **它在纯文本模型上也能用**：图片从不进入会话，`read_image` 的「当前路由必须声明 image」那道门槛对它不适用。
 - 失败会抛出可读错误：`not found` / `not a regular file` / `not a supported PNG/JPEG/WebP/GIF image` / `the vision model produced no analysis`。
 
+## 在图形界面里配置
+
+插件注册了一个设置命名空间 `image-router`，并自带浏览器一半：装上后 **设置 → 插件 → 插件配置** 里会出现一张 `image-router · 图片旁路识别` 卡片。
+
+| 卡片字段 | 生效时机 |
+|---|---|
+| `mode`、`vision.provider`、`vision.model`、`instruction`、`maxTokens`、`timeoutMs`、`label` | **保存后立即生效** —— 下一次提示词、下一次旁路调用、下一次工具调用就用新值，不需要重启 |
+| `tool`（是否注册 `describe_image`）、`traceFile`（审计文件路径） | 挂载时确定，改动需要重启 `dsh web`（卡片里没有这两项，免得承诺做不到的事） |
+
+- **卡片显示的是当前生效值**：profile 补丁层的配置作为该设置节的 base，卡片里的保存只是叠在它之上的一层覆盖（落在 `$DSH_HOME/settings.yaml` 的 `image-router:` 段）。
+- **写坏不会破坏正在工作的插件**：校验失败的覆盖会被忽略，继续用上一份好配置，并在审计文件里记一行 `settings-invalid …`。
+- 两半必须用同一个 namespace：宿主 `lib/settings.js` 的 `SETTINGS_NAMESPACE` 与浏览器 `client/client.js` 的 `NAMESPACE`。
+- 宿主侧只走 `ctx.inject(['settings'])` + `settings.register(ns, schema, { base })`：**绝不 import `@deepseek-ai/dsh-settings` 的命名导出** —— 上游删过 `installSettingsSection`，而缺失的命名导出是模块求值期 SyntaxError，会让宿主启动失败退出 1（dshmarket 踩过这个坑）。
+- 只有注册了命名空间**且**有浏览器一半注册 `settings.plugin.item` 卡片的插件才会出现在那个页面：两者缺一都不会渲染任何东西。
+
 ## 为什么需要它
 
 DSH 内置行为是「图来了但模型不收图」时静默降级或直接拒绝：
@@ -72,13 +87,15 @@ digest 模式在**准入之前**就把图片换成文字，所以它同时绕过
 
 | 环节 | 结论 |
 |---|---|
-| 单测（digest 替换 / 失败保留 / 多图合并 / dryRun / 工具调用 / 开关模式状态机 / 安全降级 / 审计） | ✅ 32 个用例通过 |
+| 单测（digest 替换 / 失败保留 / 多图合并 / dryRun / 工具调用 / 设置覆盖 / 开关模式状态机 / 安全降级 / 审计） | ✅ 35 个用例通过 |
 | 挂载进真实 web-profile 树 | ✅ 隔离实例冷启动，审计写 `mounted mode=digest …` |
 | **标准 bundle 形态可装载**（包名进 `dsh.profile.bundles` → 包内 `dsh.bundle.patch` → 部署层 config 覆盖 → `Config` 补默认值） | ✅ 隔离实例冷启动实测，`schemastery` 与回退 Standard Schema 两条路径都跑过 |
 | 无 `sessionController` 的 profile 仍能启动 | ✅ headless 冷启动 `exit=0`，审计只有 `apply-entered` |
 | **digest 端到端：会话模型不变 + 图片被正确识别** | ✅ 隔离实例实测（下方输出） |
 | **`describe_image` 注册 + 执行全链路** | ✅ 隔离实例实测（下方输出） |
 | switch 端到端（借出→保持→归还） | ✅ 隔离实例实测（`router-sequence-probe`） |
+| 设置命名空间注册 | ✅ 隔离实例实测（审计写 `settings-registered ns=image-router`） |
+| 浏览器半被发现并提供 | ✅ 隔离实例实测（boot manifest 的 combo 清单含 `dsh-image-router/client.js`，取回 200 且内容含本插件模块）；**卡片外观**需你在 GUI 里看一眼 |
 
 digest 端到端实测输出（`tools/digest-probe.mjs`）：
 
@@ -201,7 +218,7 @@ node test/routing.test.js    # 单进程直跑：没有管道支持的沙箱里�
 
 > `node --test test/` **不可移植**：Node 20 会扫描目录，Node 22+ 把 `test/` 当成单个入口文件去加载而报 `MODULE_NOT_FOUND`（CI 就是靠多版本矩阵抓到这个的）。
 
-33 个用例：配置归一化与校验（含旧模式名映射、schema 物化出的空对象/空数组）、图片信号判定、digest 的替换/多图合并/失败保留/无图直通/dryRun/落盘失败、`describe_image` 的注册/读文件/问题透传/缺文件与目录与非图片的拒绝、switch 的借出‑归还‑放弃状态机、手选模型不被覆盖、`holdTurns`、`sticky`、路由校验与缓存、冷会话不路由也不告警、门面两种布局、审计可写与不可写、无 `sessionController` 时不包装、卸载恢复。
+35 个用例：配置归一化与校验（含旧模式名映射、schema 物化出的空对象/空数组）、图片信号判定、digest 的替换/多图合并/失败保留/无图直通/dryRun/落盘失败、`describe_image` 的注册/读文件/问题透传/缺文件与目录与非图片的拒绝、设置节的注册与「保存后下一轮即生效」、校验失败的覆盖被忽略、switch 的借出‑归还‑放弃状态机、手选模型不被覆盖、`holdTurns`、`sticky`、路由校验与缓存、冷会话不路由也不告警、门面两种布局、审计可写与不可写、无 `sessionController` 时不包装、卸载恢复。
 
 CI（`.github/workflows/ci.yml`）在 Ubuntu + Windows × Node 20/22/24 上跑同一套用例，并校验「`dsh.bundle.patch` 指向的文件存在、入口导出 `name`/`Config`/`apply`」这条打包契约。
 
