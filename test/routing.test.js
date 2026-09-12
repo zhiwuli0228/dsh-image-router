@@ -43,14 +43,32 @@ const flush = () => new Promise((resolve) => setTimeout(resolve, 0))
  */
 function declaredContext(base, declared) {
 	// `inject` is a context verb, not a service: the real gate exempts the verbs
-	// (CTX_VERBS) and gates service reads only.
-	const allowed = new Set(['inject', ...declared])
+	// (CTX_VERBS) and gates service reads only. Dotted declarations such as
+	// `remote.settings` name a namespace *inside* the `remote` table, so they gate
+	// that table's contents rather than a top-level context property — the read the
+	// plugin actually performs is `ctx.remote.settings`.
+	const verbs = new Set(['inject'])
+	const services = new Set(declared.filter((key) => !key.includes('.')))
+	const namespaces = new Set(declared.filter((key) => key.startsWith('remote.')).map((key) => key.slice('remote.'.length)))
 	return new Proxy(base, {
 		get(target, property, receiver) {
-			if (typeof property === 'string' && !allowed.has(property)) {
+			if (typeof property === 'string' && !verbs.has(property) && !services.has(property)) {
 				throw new TypeError(`cannot get property "${property}" without inject`)
 			}
-			return Reflect.get(target, property, receiver)
+			const value = Reflect.get(target, property, receiver)
+			// Gate the Remote table per namespace, which is how the real context
+			// behaves: `remote` alone does not make `remote.settings` readable.
+			if (property === 'remote' && value !== null && typeof value === 'object') {
+				return new Proxy(value, {
+					get(remoteTarget, remoteProperty, remoteReceiver) {
+						if (typeof remoteProperty === 'string' && !namespaces.has(remoteProperty)) {
+							throw new TypeError(`cannot get property "remote.${remoteProperty}" without inject`)
+						}
+						return Reflect.get(remoteTarget, remoteProperty, remoteReceiver)
+					}
+				})
+			}
+			return value
 		}
 	})
 }
@@ -1183,13 +1201,21 @@ test('the browser half activates and registers its card', () => {
 
 	const registered = []
 	let bound
-	let injected
 	let renderCard
-	const scoped = {
+	const scope = {
+		subscribe: () => () => {},
+		getSnapshot: () => ({ value: {}, writable: true, revision: 1 }),
+		set: async () => {}
+	}
+	const base = {
+		remote: {
+			llm: { listProviders: async () => ({ ok: true, value: [] }) },
+			settings: { describe: async () => ({ ok: true, value: { namespaces: {} } }) }
+		},
 		settingsScope: {
 			bind: (options) => {
 				bound = options
-				return { subscribe: () => () => {}, getSnapshot: () => ({ value: {}, writable: true, revision: 1 }), set: async () => {} }
+				return scope
 			}
 		},
 		slots: {
@@ -1201,17 +1227,20 @@ test('the browser half activates and registers its card', () => {
 				registered.push(`register:${options.name}:${options.key}`)
 				assert.equal(typeof render, 'function')
 				renderCard = render
-			}
+			},
+			entries: () => [{ options: { key: 'image-router' } }]
 		}
 	}
-	module.apply(declaredContext({ remote: { llm: {}, settings: {} }, inject: (names, callback) => { injected = names; callback(scoped) } }, module.inject))
+	module.apply(declaredContext(base, module.inject))
 
-	// Every gated service the half reads must be declared. `remote` is the one that
-	// hides, because only the card's render touches it: without the declaration the
-	// render throws "cannot get property \"remote\" without inject" when the tab
-	// dispatches the card, which the tab reports as a crashed slot entry.
-	assert.deepEqual(module.inject, ['slots', 'remote'], 'declare every gated service this half reads')
-	assert.deepEqual(injected, ['settingsScope'], 'the settings scope is the optional half')
+	// Every gated service the half reads must be declared, and the Remote table
+	// counts per namespace: `remote` alone left `remote.settings` unreadable, which
+	// surfaced only when the render asked for the configured routes.
+	assert.deepEqual(
+		module.inject,
+		['slots', 'remote', 'remote.settings', 'remote.llm', 'settingsScope'],
+		'declare every gated service, including each Remote namespace the card reads'
+	)
 	assert.deepEqual(registered, ['inject:settings.plugin.item', 'register:settings.plugin.item:image-router'], 'the card is claimed under the namespace the Host serves, or the tab dispatches nothing')
 	assert.equal(bound.namespace, 'image-router', 'both halves must spell the same namespace')
 
@@ -1219,10 +1248,16 @@ test('the browser half activates and registers its card', () => {
 	// in the browser and left the tab with nothing to draw.
 	const element = renderCard()
 	assert.equal(typeof element.type, 'function', 'the registration renders the card component')
-	assert.equal(typeof element.props.remote, 'object', 'the card receives the Remote table it was declared for')
+	assert.equal(typeof element.props.remote, 'object', 'the card receives the Remote table')
+	assert.equal(typeof element.props.remote.settings.describe, 'function', 'and specifically the namespaces it reads')
+	assert.equal(typeof element.props.remote.llm.listProviders, 'function')
 })
 
-test('the browser half degrades when the settings scope never arrives', () => {
+test('the browser half reports a broken scope instead of throwing at activation', () => {
+	// `settingsScope` is a declared service now, so the loader gates activation on
+	// it. A context that answers the declaration but hands back nothing usable must
+	// still be a reported no-op: an activation throw takes the whole shell's plugin
+	// load down with it.
 	const source = readFileSync(new URL('../client/client.js', import.meta.url), 'utf8')
 	let entry
 	new Function('window', source)({ __ModuleLoader__: { load: (value) => { entry = value } } })
@@ -1236,15 +1271,11 @@ test('the browser half degrades when the settings scope never arrives', () => {
 	}
 	const module = entry.factory((name) => (name === 'react' ? React : (() => { throw new Error(name) })()))
 
-	// Optional injection simply never runs the callback: a clean no-op.
-	module.apply(declaredContext({ remote: {}, inject: () => {} }, module.inject))
-
-	// A callback that fires without the service must be reported, not thrown.
 	let warned = 0
 	const originalWarn = console.warn
 	console.warn = () => { warned++ }
 	try {
-		module.apply(declaredContext({ remote: {}, inject: (_names, callback) => callback({ slots: { inject: () => {}, register: () => {} } }) }, module.inject))
+		module.apply(declaredContext({ remote: { llm: {}, settings: {} }, settingsScope: undefined, slots: {} }, module.inject))
 	} finally {
 		console.warn = originalWarn
 	}

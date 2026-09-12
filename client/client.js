@@ -600,25 +600,26 @@ window.__ModuleLoader__.load({
 		const name = 'image-router'
 
 		/**
-		 * Required, and only this one.
+		 * Every service this half reads, because cordis' plugin context is
+		 * declaration-gated: reading an undeclared one throws
+		 * `cannot get property "X" without inject`.
 		 *
-		 * cordis' plugin context is declaration-gated: reading a service that was not
-		 * declared throws `cannot get property "X" without inject`. Both of these are
-		 * read by this half, and both therefore have to be declared:
+		 * Two shapes of this bite differently, and both were hit here:
 		 *
-		 *  - `slots` carries the card into the settings tab and owns its registration.
-		 *  - `remote` is the Typert Remote table the card uses for the model picker.
+		 *  - A service read during activation (`slots`) fails the loader entry, so
+		 *    the plugin never activates at all.
+		 *  - A service read only inside the card's render fails *after* a successful
+		 *    registration, so the tab dispatches a card that throws and draws
+		 *    nothing — which reads exactly like a missing option.
 		 *
-		 * The second one is easy to miss because the declaration is consumed inside
-		 * the card's render function rather than during activation: leaving it out
-		 * produces a card entry that registers successfully and then crashes when the
-		 * tab dispatches it ("slot entry crashed in 'settings.plugin.item': cannot get
-		 * property \"remote\" without inject"), which reads as a missing option.
-		 *
-		 * `settingsScope` is reached the optional way instead, so a deployment that
-		 * ships no settings UI still activates.
+		 * The Remote table is the subtle part: `remote` is not enough. Each namespace
+		 * under it is its own service name and must be declared separately — the
+		 * official models section declares `remote`, `remote.credentials`,
+		 * `remote.llm` and `remote.settings` as four entries for the same reason.
+		 * This card reads `remote.settings.describe()` for the configured routes and
+		 * `remote.llm.*` for the capability oracle.
 		 */
-		const inject = ['slots', 'remote']
+		const inject = ['slots', 'remote', 'remote.settings', 'remote.llm', 'settingsScope']
 
 		/**
 		 * Activation report, readable as `window.__imageRouter` in the browser.
@@ -638,44 +639,36 @@ window.__ModuleLoader__.load({
 
 		function apply(ctx) {
 			report.applied = true
-			// Declared above, so this read is permitted; it is also the only service
-			// the plugin may touch before the optional injection below runs.
+			// Every service below is declared in `inject` above, so these reads are
+			// permitted; the plugin context refuses anything undeclared.
 			report.slots = ctx.slots !== undefined
+			report.remoteNamespaces = ['settings', 'llm'].filter((key) => ctx.remote?.[key] !== undefined)
 			publish()
 			try {
-				ctx.inject(['settingsScope'], (scoped) => {
-					report.scope = scoped.settingsScope !== undefined
-					report.scopedSlots = scoped.slots !== undefined
+				const scope = ctx.settingsScope.bind({ namespace: NAMESPACE })
+				report.scope = true
+				// The Remote table is handed to the card as a plain object so a render
+				// never touches the gated context: reading a namespace there is exactly
+				// what threw `cannot get property "remote.settings" without inject`.
+				const remote = { settings: ctx.remote.settings, llm: ctx.remote.llm }
+				ctx.slots.inject('settings.plugin.item', () => {
+					report.slotDispatched = true
 					publish()
-					if (scoped.settingsScope === undefined) {
-						report.error = 'settingsScope unavailable'
-						publish()
-						console.warn('[image-router] settings card unavailable: settingsScope is not available in this deployment')
-						return
+					// The registration options follow the contract the official section
+					// ships for its own cards: `name` + `key` claim the namespace, and
+					// `inject` supplies the hooks the card is handed. `locale` is
+					// deliberately NOT declared — this card draws its own copy inline
+					// and registers no locale entries, and declaring a copy namespace
+					// with nothing under it is a claim the card cannot honour.
+					const cardOptions = {
+						name: 'settings.plugin.item',
+						key: NAMESPACE,
+						// No injected hooks: the card reads its state through the bound
+						// settings scope and the Remote table, both captured above.
+						inject: () => ({})
 					}
-					const scope = scoped.settingsScope.bind({ namespace: NAMESPACE })
-					// `remote` is the Typert Remote namespace table (declared in this
-					// package's `dsh.client.inject`). It is read lazily inside the card so
-					// a deployment that mounts no API-remotes plugin still renders — with
-					// manual entry instead of the model picker.
-					scoped.slots.inject('settings.plugin.item', () => {
-						report.slotDispatched = true
-						publish()
-						// The registration options follow the contract the official section
-						// ships for its own cards: `name` + `key` claim the namespace, and
-						// `inject` supplies the hooks the card is handed. `locale` is
-						// deliberately NOT declared — this card draws its own copy inline
-						// and registers no locale entries, and declaring a copy namespace
-						// with nothing under it is a claim the card cannot honour.
-						const cardOptions = {
-							name: 'settings.plugin.item',
-							key: NAMESPACE,
-							// No injected hooks: the card reads its state through the bound
-							// settings scope and the Remote table, both reached above.
-							inject: () => ({})
-						}
 						report.slotOptions = Object.keys(cardOptions)
-						scoped.slots.register(cardOptions, () => h(Card, { scope, remote: ctx.remote }))
+						ctx.slots.register(cardOptions, () => h(Card, { scope, remote }))
 						report.registered = true
 						// Read the ledger back. The tab renders the intersection of the
 						// namespaces the Host serves with the entries this slot actually
@@ -683,7 +676,7 @@ window.__ModuleLoader__.load({
 						// kept it". Recording what the slot reports turns a silent absence
 						// into a readable one.
 						try {
-							const entries = scoped.slots.entries('settings.plugin.item')
+							const entries = ctx.slots.entries('settings.plugin.item')
 							report.slotEntryCount = Array.isArray(entries) ? entries.length : -1
 							report.slotHasMine = Array.isArray(entries)
 								? entries.some((entry) => (entry?.options?.key ?? entry?.key) === NAMESPACE)
@@ -699,7 +692,6 @@ window.__ModuleLoader__.load({
 						}
 						publish()
 					})
-				})
 			} catch (error) {
 				report.error = String(error)
 				publish()
