@@ -206,7 +206,7 @@ function fakeAttachments({ fail = false } = {}) {
  * LLM double: an async stream of chunks, recording every option object, plus the
  * registry surface the plugin reads for its capability oracle.
  */
-function fakeLlm({ chunks = [{ type: 'text-delta', text: '文字内容: VISION ROUTER\n画面描述: 深蓝色背景' }, { type: 'finish', reason: 'stop' }], models = {} } = {}) {
+function fakeLlm({ chunks = [{ type: 'text-delta', text: '文字内容: VISION ROUTER\n画面描述: 深蓝色背景' }, { type: 'finish', reason: 'stop' }], chunksPerCall, models = {} } = {}) {
 	const calls = []
 	const discoveries = []
 	return {
@@ -224,7 +224,10 @@ function fakeLlm({ chunks = [{ type: 'text-delta', text: '文字内容: VISION R
 		},
 		async *stream(options) {
 			calls.push(options)
-			for (const chunk of chunks) yield chunk
+			// `chunksPerCall` scripts a different answer per attempt, which is how a
+			// retry (a second `stream` call) is told apart from the first attempt.
+			const scripted = Array.isArray(chunksPerCall) ? chunksPerCall[calls.length - 1] : undefined
+			for (const chunk of scripted ?? chunks) yield chunk
 		}
 	}
 }
@@ -388,6 +391,56 @@ test('a route that delivers its answer only as a completed block still counts', 
 	assert.ok(text.includes('BLOCK ONLY'), 'the completed block is used when no deltas arrive')
 	assert.equal(text.includes('让我先想想'), false, 'reasoning is never mistaken for the analysis')
 	assert.equal(readFileSync(trace, 'utf8').includes('digest-empty'), false, 'and it is not reported as an empty answer')
+	rmSync(join(trace, '..'), { recursive: true, force: true })
+})
+
+test('a finish reason reported as an object is read, not swallowed', async () => {
+	// The adapter answers `finish.reason` with an OBJECT — `mapStopReason` returns
+	// `{ kind: 'error', failure: { code, message } }` — so comparing it to a string
+	// missed every failure it reported, including its own "completed response with no
+	// content". A diagnosable error became a silent empty answer.
+	const controller = fakeController({ noSelectionApi: true })
+	const llm = fakeLlm({ chunks: [{ type: 'finish', reason: { kind: 'error', failure: { code: 'SOME_BAD_CODE', message: 'upstream said no' } } }] })
+	const trace = join(mkdtempSync(join(tmpdir(), 'image-router-reason-')), 'trace.log')
+	const ctx = fakeContext(controller, llm, { attachments: fakeAttachments() })
+	apply(ctx, { vision: VISION, imageExtensions: EXTENSIONS, traceFile: trace })
+
+	await controller.prompt({ sessionId: 's1', content: IMAGE })
+	const audit = readFileSync(trace, 'utf8')
+	assert.ok(audit.includes('digest-failed reason=upstream said no'), 'the adapter message reaches the audit')
+	assert.ok(audit.includes('code=SOME_BAD_CODE'), 'and so does its code')
+	assert.equal(audit.includes('digest-empty'), false, 'a reported failure is not reported as an empty answer')
+	assert.ok(controller.requests[0].content.some((part) => part.type === 'image'), 'and the image is left for the original path to judge')
+	rmSync(join(trace, '..'), { recursive: true, force: true })
+})
+
+test('a budget spent entirely on reasoning is retried once with room for both', async () => {
+	// On `openai-completions` the token budget is shared with the model's own
+	// reasoning, so a budget that suits a plain model can be consumed by thinking
+	// before the answer starts. The live failure was exactly that: a 900 budget
+	// produced reasoning deltas, a finish, and no text at all.
+	const controller = fakeController({ noSelectionApi: true })
+	const llm = fakeLlm({
+		chunks: [],
+		chunksPerCall: [
+			[{ type: 'reasoning-delta', text: '先想想…' }, { type: 'finish', reason: { kind: 'max-tokens' } }],
+			[{ type: 'text-delta', text: '文字内容: 想完了' }, { type: 'finish', reason: { kind: 'stop' } }]
+		]
+	})
+	const trace = join(mkdtempSync(join(tmpdir(), 'image-router-retry-')), 'trace.log')
+	const ctx = fakeContext(controller, llm, { attachments: fakeAttachments() })
+	apply(ctx, { vision: VISION, imageExtensions: EXTENSIONS, maxTokens: 900, traceFile: trace })
+
+	await controller.prompt({ sessionId: 's1', content: IMAGE })
+	assert.equal(llm.calls.length, 2, 'the analysis is attempted twice')
+	assert.equal(llm.calls[0].maxTokens, 900, 'the configured budget is tried first')
+	assert.ok(llm.calls[1].maxTokens > 900, 'and the retry has room for the reasoning as well as the answer')
+	const text = controller.requests[0].content.map((part) => part.text ?? '').join('\n')
+	assert.ok(text.includes('想完了'), 'the retry answer is what reaches the prompt')
+	const audit = readFileSync(trace, 'utf8')
+	assert.ok(audit.includes('digest-retry reason=reasoning-consumed-budget'), 'the retry is audited, so a slow analysis has an explanation')
+	assert.ok(audit.includes('digest-retry-ok'), 'and so is its success')
+	assert.equal(audit.includes('digest-empty'), false)
 	rmSync(join(trace, '..'), { recursive: true, force: true })
 })
 

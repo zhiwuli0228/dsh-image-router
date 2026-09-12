@@ -296,7 +296,7 @@ dsh plugin --profile web add file:E:\path\to\dsh-image-router
 | `mode` | `digest` | `digest`＝旁路分析并替换文字（不改模型）；`switch`＝临时借用视觉路由 |
 | `vision` | 必填（二选一） | 旁路调用的路由。**①** `provider` / `model` / 可选 `reasoningEffort`；**②** `endpoint: { baseURL, model, api?, name?, apiKey?, apiKeyEnv?, images? }` —— 由宿主翻译成上游 `llm-pi-ai` 的一条路由。两者同时存在时 ① 优先 |
 | `instruction` | 内置（提取文字 + 描述画面） | 给视觉模型的指令 |
-| `maxTokens` | `900` | 分析结果上限 |
+| `maxTokens` | `900` | 分析结果上限。**注意**：在 `openai-completions` 这类协议上，这个预算与模型自己的**思考 token 共享**（pi-ai 源码原文：*reasoning and the answer share `max_tokens` here, so an uncapped reasoning phase can consume the whole response and leave no answer*）。推理模型常常把 900 全花在思考上、正文一个字都不产出 —— 此时插件会**自动用更大预算重试一次**（`max(4×, 4096)`，上限 32768），审计里记 `digest-retry` / `digest-retry-ok`。若想避免这次重试的额外耗时，就把预算直接设到 4000 以上 |
 | `timeoutMs` | `120000` | 单次旁路调用的超时 |
 | `label` | `true` | 在替换文本前加 `[图片分析 · provider/model]` 标记 |
 | `tool` | `true` | 是否注册 `describe_image`（按路径按需分析图片的模型工具） |
@@ -343,7 +343,7 @@ node test/routing.test.js    # 单进程直跑：没有管道支持的沙箱里�
 
 > `node --test test/` **不可移植**：Node 20 会扫描目录，Node 22+ 把 `test/` 当成单个入口文件去加载而报 `MODULE_NOT_FOUND`（CI 就是靠多版本矩阵抓到这个的）。
 
-65 个用例：配置归一化与校验（含旧模式名映射、schema 物化出的空对象/空数组、端点档补齐 vision 路由与两档优先级）、图片信号判定、digest 的替换/多图合并/失败保留/无图直通/dryRun/落盘失败、`describe_image` 的注册/读文件/问题透传/缺文件与目录与非图片的拒绝、设置节的注册与「保存后下一轮即生效」、校验失败的覆盖被忽略、自定义端点写入上游路由与凭据（含"跳过/失败不得记为已同步"这一可重试契约、以及"合并而非覆盖上游 profile"）、图片能力 oracle（声明优先于 id、按命名空间注册、过滤、未知路由不抛错、无 llm 服务时退化）、**schema 三方消费者契约（`~standard` / 可调用 / `toJSON`+`safeParse`）**、**浏览器半边激活契约（`inject` 必须为空、以自己命名空间 claim card、服务缺席时干净降级）**、switch 的借出‑归还‑放弃状态机、手选模型不被覆盖、`holdTurns`、`sticky`、路由校验与缓存、冷会话不路由也不告警、门面两种布局、审计可写与不可写、无 `sessionController` 时不包装、卸载恢复。
+68 个用例：配置归一化与校验（含旧模式名映射、schema 物化出的空对象/空数组、端点档补齐 vision 路由与两档优先级）、图片信号判定、digest 的替换/多图合并/失败保留/无图直通/dryRun/落盘失败、`describe_image` 的注册/读文件/问题透传/缺文件与目录与非图片的拒绝、设置节的注册与「保存后下一轮即生效」、校验失败的覆盖被忽略、自定义端点写入上游路由与凭据（含"跳过/失败不得记为已同步"这一可重试契约、以及"合并而非覆盖上游 profile"）、图片能力 oracle（声明优先于 id、按命名空间注册、过滤、未知路由不抛错、无 llm 服务时退化）、**schema 三方消费者契约（`~standard` / 可调用 / `toJSON`+`safeParse`）**、**浏览器半边激活契约（`inject` 必须为空、以自己命名空间 claim card、服务缺席时干净降级）**、switch 的借出‑归还‑放弃状态机、手选模型不被覆盖、`holdTurns`、`sticky`、路由校验与缓存、冷会话不路由也不告警、门面两种布局、审计可写与不可写、无 `sessionController` 时不包装、卸载恢复。
 
 CI（`.github/workflows/ci.yml`）在 Ubuntu + Windows × Node 20/22/24 上跑同一套用例，并校验「`dsh.bundle.patch` 指向的文件存在、入口导出 `name`/`Config`/`apply`」这条打包契约。
 
