@@ -18,7 +18,31 @@
       provider: qwen-token-plan-cn
       model: qwen3.8-flash
 
-# ── 2. Everything a digest deployment can tune ────────────────────────────────
+# ── 2. Custom endpoint: supply baseURL + model + key instead of a route id ────
+# The Host turns this into one route in the `llm-pi-ai` settings section and
+# stores the key in the credential store under `IMAGE_ROUTER_VISION_API_KEY`.
+# The key is write-only: it is never echoed back into this config.
+# You can also do this from the card in 设置 → 插件 → 插件配置.
+# - id: image-router
+#   config:
+#     mode: digest
+#     vision:
+#       endpoint:
+#         baseURL: https://gateway.example/v1
+#         model: gpt-4o-mini
+#         # optional: openai-completions (default) | openai-responses | anthropic-messages
+#         api: openai-completions
+#         # optional display name for selectors in 设置 → 模型
+#         name: My Gateway
+#         # optional credential reference name (default IMAGE_ROUTER_VISION_API_KEY)
+#         # apiKeyEnv: MY_GATEWAY_KEY
+#         # optional: write the key into the credential store on mount
+#         # apiKey: sk-REPLACE-ME
+#         # Keep this on. pi-ai defaults a hand-declared route to text-only, and a
+#         # text-only route receives placeholders instead of the image.
+#         images: true
+
+# ── 3. Everything a digest deployment can tune ────────────────────────────────
 # - id: image-router
 #   config:
 #     enabled: true
@@ -42,7 +66,7 @@
 #     # Log decisions without calling the vision model.
 #     dryRun: false
 
-# ── 3. Opt-in legacy policy: lend the session route for image turns ───────────
+# ── 4. Opt-in legacy policy: lend the session route for image turns ───────────
 # - id: image-router
 #   config:
 #     mode: switch
@@ -56,7 +80,7 @@
 #     imageExtensions: [png, jpg, jpeg, webp, gif]
 #     hint: '截图|screenshot'
 
-# ── 4. Development: mount the plugin source directly, no install ──────────────
+# ── 5. Development: mount the plugin source directly, no install ──────────────
 # Replace the package name with the path to lib/index.js. Absolute and ./-relative
 # paths are accepted in an insert row (the loader turns them into file URLs).
 # - insert:

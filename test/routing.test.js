@@ -13,6 +13,7 @@ import { join } from 'node:path'
 import { test } from 'node:test'
 
 import { apply, Config, decideRoute, nameLooksLikeImage, normalizeConfig, promptWantsVision, sameModel } from '../lib/index.js'
+import { ENDPOINT_APIS, ENDPOINT_KEY_REF, ENDPOINT_PROVIDER, readEndpoint, routeForEndpoint, syncEndpoint } from '../lib/endpoint.js'
 
 const EXTENSIONS = ['png', 'jpg', 'jpeg', 'webp', 'gif']
 const VISION = { provider: 'qwen-token-plan-cn', model: 'qwen3.8-flash' }
@@ -22,8 +23,11 @@ const EMPTY_IMAGE = [{ type: 'image', attachment: {} }]
 const IMAGE = [{ type: 'text', text: '读一下' }, WIRE_IMAGE]
 const PLAIN = [{ type: 'text', text: 'plain question' }]
 
+/** Let the endpoint tier's fire-and-forget promises settle before asserting. */
+const flush = () => new Promise((resolve) => setTimeout(resolve, 0))
+
 /** Minimal ctx double recording logger calls and collecting effects. */
-function fakeContext(controller, llm, { controllerAvailable = true, attachments, fs, tools, settings } = {}) {
+function fakeContext(controller, llm, { controllerAvailable = true, attachments, fs, tools, settings, credentials } = {}) {
 	const logs = { info: [], warn: [] }
 	const disposers = []
 	const injected = []
@@ -33,6 +37,7 @@ function fakeContext(controller, llm, { controllerAvailable = true, attachments,
 		injected,
 		tools,
 		settings,
+		credentials,
 		sessionController: controllerAvailable ? controller : undefined,
 		get: (key) => {
 			if (key === 'llm') return llm
@@ -40,6 +45,7 @@ function fakeContext(controller, llm, { controllerAvailable = true, attachments,
 			if (key === 'fs') return fs
 			if (key === 'tools') return tools
 			if (key === 'settings') return settings
+			if (key === 'credentials') return credentials
 			return undefined
 		},
 		logger: {
@@ -605,7 +611,7 @@ test('apply activates without a session controller and never wraps the prompt th
 	const ctx = fakeContext(controller, undefined, { controllerAvailable: false })
 	apply(ctx, { vision: VISION })
 
-	assert.deepEqual(ctx.injected, ['tools', 'settings', 'sessionController'], 'every service is requested optionally, never as a required dependency')
+	assert.deepEqual(ctx.injected, ['tools', 'settings', 'llm,settings,credentials', 'sessionController'], 'every service is requested optionally, never as a required dependency')
 	assert.equal(controller.prompt, original, 'nothing is wrapped when the service is absent')
 	assert.equal(ctx.logs.warn.length, 0)
 	await controller.prompt({ sessionId: 's1', content: IMAGE })
@@ -715,11 +721,11 @@ test('apply registers no tool when disabled, and tolerates a deployment without 
 	const disabled = fakeContext(fakeController(), fakeLlm(), { tools: disabledTools, attachments: fakeAttachments(), fs: fakeFs() })
 	apply(disabled, { vision: VISION, tool: false })
 	assert.equal(disabledTools.registered.length, 0)
-	assert.deepEqual(disabled.injected, ['settings', 'sessionController'], 'a disabled tool is not even requested')
+	assert.deepEqual(disabled.injected, ['settings', 'llm,settings,credentials', 'sessionController'], 'a disabled tool is not even requested')
 
 	const bare = fakeContext(fakeController(), fakeLlm(), { attachments: fakeAttachments(), fs: fakeFs() })
 	apply(bare, { vision: VISION })
-	assert.deepEqual(bare.injected, ['tools', 'settings', 'sessionController'], 'the tool and settings services are requested optionally, so their absence cannot fail the mount')
+	assert.deepEqual(bare.injected, ['tools', 'settings', 'llm,settings,credentials', 'sessionController'], 'the tool, settings and endpoint services are requested optionally, so their absence cannot fail the mount')
 	assert.equal(bare.logs.warn.length, 0)
 })
 
@@ -731,6 +737,8 @@ function fakeSettings(initial = {}) {
 		namespace: undefined,
 		schema: undefined,
 		options: undefined,
+		/** Every upstream `mutate(ns, ops)` the endpoint tier issued, in order. */
+		mutations: [],
 		register(namespace, schema, options) {
 			this.namespace = namespace
 			this.schema = schema
@@ -746,6 +754,24 @@ function fakeSettings(initial = {}) {
 		save(patch) {
 			state.value = { ...state.value, ...patch }
 			for (const listener of state.watchers) listener()
+		},
+		/** The upstream write path the endpoint tier uses; only paths are touched. */
+		async mutate(namespace, ops) {
+			this.mutations.push({ namespace, ops })
+		}
+	}
+}
+
+/** Credential-store double: remembers `set(ref, value)` calls and nothing else. */
+function fakeCredentials() {
+	return {
+		sets: [],
+		unsets: [],
+		async set(ref, value) {
+			this.sets.push({ ref, value })
+		},
+		async unset(ref) {
+			this.unsets.push(ref)
 		}
 	}
 }
@@ -799,4 +825,163 @@ test('apply restores the original prompt when the plugin is disposed', () => {
 	assert.notEqual(controller.prompt, original)
 	for (const dispose of ctx.disposers) dispose()
 	assert.equal(controller.prompt, original)
+})
+
+// ── The custom-endpoint tier ────────────────────────────────────────────────
+//
+// The plugin never speaks a provider wire protocol itself: a user-supplied
+// endpoint becomes an `llm-pi-ai` route profile plus one credential reference.
+// These cases pin that translation and the precedence between the two tiers.
+
+/** One endpoint configuration as the card would save it. */
+const ENDPOINT = { baseURL: 'https://gateway.example/v1', model: 'my-vision-model', apiKey: 'sk-card-typed' }
+
+test('normalizeConfig derives the vision route from a custom endpoint', () => {
+	const resolved = normalizeConfig({ vision: { endpoint: ENDPOINT } })
+	assert.equal(resolved.problems, undefined, 'an endpoint alone is a complete configuration')
+	assert.equal(resolved.endpoint.model, 'my-vision-model')
+	assert.deepEqual(resolved.vision, { provider: ENDPOINT_PROVIDER, model: 'my-vision-model' }, 'the derived route is what every routing decision sees')
+	assert.equal(resolved.endpoint.api, 'openai-completions', 'the protocol defaults to the OpenAI-compatible one')
+	assert.equal(resolved.endpoint.apiKey, 'sk-card-typed')
+})
+
+test('normalizeConfig keeps an explicit vision route when both tiers are set', () => {
+	const resolved = normalizeConfig({ vision: { ...VISION, endpoint: ENDPOINT } })
+	assert.equal(resolved.problems, undefined)
+	assert.deepEqual(resolved.vision, VISION, 'the explicit route wins, so existing deployments keep working unchanged')
+	assert.notEqual(resolved.endpoint, undefined, 'the endpoint is still resolved, so the derived route stays available upstream')
+})
+
+test('normalizeConfig reports a malformed endpoint instead of disabling silently', () => {
+	const noModel = normalizeConfig({ vision: { endpoint: { baseURL: 'https://gateway.example/v1' } } })
+	assert.ok(noModel.problems.some((problem) => problem.includes('model must be a non-empty')), 'a missing model is named')
+
+	const badApi = normalizeConfig({ vision: { endpoint: { ...ENDPOINT, api: 'grpc' } } })
+	assert.ok(badApi.problems.some((problem) => problem.includes(ENDPOINT_APIS.join(', '))), 'an unsupported protocol lists the accepted set')
+
+	const noRoute = normalizeConfig({})
+	assert.ok(noRoute.problems.some((problem) => problem.includes('vision.endpoint')), 'the error tells the user both ways to configure it')
+})
+
+test('readEndpoint treats a schema-materialized empty object as unset', () => {
+	const problems = []
+	assert.equal(readEndpoint({}, 'vision.endpoint', problems), undefined, 'an unset optional object must not read as a broken one')
+	assert.deepEqual(problems, [])
+	assert.equal(readEndpoint(undefined, 'vision.endpoint', problems), undefined)
+	assert.equal(readEndpoint({ baseURL: '   ' }, 'vision.endpoint', problems), undefined)
+	assert.ok(problems.some((problem) => problem.includes('model')), 'a half-filled endpoint is still reported')
+})
+
+test('routeForEndpoint and the endpoint profile share one provider key', () => {
+	const endpoint = readEndpoint(ENDPOINT, 'vision.endpoint', [])
+	assert.deepEqual(routeForEndpoint(endpoint), { provider: ENDPOINT_PROVIDER, model: 'my-vision-model' })
+})
+
+test('apply writes the custom endpoint upstream as a pi-ai route plus one credential', async () => {
+	const controller = fakeController({ noSelectionApi: true })
+	const llm = fakeLlm()
+	const settings = fakeSettings()
+	const credentials = fakeCredentials()
+	const ctx = fakeContext(controller, llm, { attachments: fakeAttachments(), settings, credentials })
+	apply(ctx, { vision: { endpoint: ENDPOINT } })
+	await flush()
+
+	assert.equal(settings.mutations.length, 1, 'exactly one settings write is issued')
+	const write = settings.mutations[0]
+	assert.equal(write.namespace, 'llm-pi-ai', 'the route belongs to the upstream pi-ai adapter, not to this plugin')
+	assert.equal(write.ops.length, 1, 'only the path this plugin owns is touched')
+	assert.deepEqual(write.ops[0].path, ['providers', ENDPOINT_PROVIDER])
+	assert.equal(write.ops[0].op, 'set')
+	assert.equal(write.ops[0].value.baseURL, 'https://gateway.example/v1')
+	assert.equal(write.ops[0].value.api, 'openai-completions')
+	assert.deepEqual(write.ops[0].value.models, [{ id: 'my-vision-model', input: ['text', 'image'] }], 'the entry declares image input, or pi-ai would treat the derived route as text-only')
+	assert.equal(write.ops[0].value.apiKeyEnv, ENDPOINT_KEY_REF, 'the profile carries only a reference to the secret')
+
+	assert.deepEqual(credentials.sets, [{ ref: ENDPOINT_KEY_REF, value: 'sk-card-typed' }], 'the key itself goes to the credential store')
+})
+
+test('the endpoint tier routes image work through the derived provider', async () => {
+	const controller = fakeController({ noSelectionApi: true })
+	const llm = fakeLlm()
+	const settings = fakeSettings()
+	const ctx = fakeContext(controller, llm, { attachments: fakeAttachments(), settings, credentials: fakeCredentials() })
+	apply(ctx, { vision: { endpoint: ENDPOINT } })
+	await flush()
+
+	await controller.prompt({ sessionId: 's1', content: IMAGE })
+	assert.equal(llm.calls.length, 1)
+	assert.equal(llm.calls[0].provider, ENDPOINT_PROVIDER, 'the digest call targets the derived route')
+	assert.equal(llm.calls[0].model, 'my-vision-model')
+	assert.equal(controller.calls.length, 0, 'the session model is still never touched')
+})
+
+test('the endpoint tier withdraws its route when the endpoint is removed, keeping the stored key', async () => {
+	const controller = fakeController({ noSelectionApi: true })
+	const llm = fakeLlm()
+	const settings = fakeSettings()
+	const credentials = fakeCredentials()
+	const ctx = fakeContext(controller, llm, { attachments: fakeAttachments(), settings, credentials })
+	apply(ctx, { vision: { endpoint: ENDPOINT } })
+	await flush()
+
+	settings.save({ vision: { provider: VISION.provider, model: VISION.model } })
+	await flush()
+
+	assert.equal(settings.mutations.length, 2, 'the withdrawal is one more write')
+	assert.deepEqual(settings.mutations[1].ops, [{ op: 'unset', path: ['providers', ENDPOINT_PROVIDER] }])
+	assert.equal(credentials.sets.length, 1, 'withdrawing a route never deletes a credential the user may reuse')
+})
+
+test('an unchanged endpoint is not rewritten on every settings event', async () => {
+	const controller = fakeController({ noSelectionApi: true })
+	const llm = fakeLlm()
+	const settings = fakeSettings()
+	const ctx = fakeContext(controller, llm, { attachments: fakeAttachments(), settings, credentials: fakeCredentials() })
+	apply(ctx, { vision: { endpoint: ENDPOINT } })
+	await flush()
+
+	// A save that touches only an unrelated field must not re-push the route.
+	settings.save({ instruction: '只转录文字' })
+	await flush()
+	assert.equal(settings.mutations.length, 1, 'the upstream route is written once, not once per settings event')
+
+	// Changing the endpoint itself is a new signature and must be pushed.
+	settings.save({ vision: { endpoint: { ...ENDPOINT, model: 'other-vision' } } })
+	await flush()
+	assert.equal(settings.mutations.length, 2)
+	assert.deepEqual(settings.mutations[1].ops[0].value.models, [{ id: 'other-vision', input: ['text', 'image'] }])
+})
+
+test('a deployment without the settings service keeps routing on the explicit route', async () => {
+	const controller = fakeController({ noSelectionApi: true })
+	const llm = fakeLlm()
+	const ctx = fakeContext(controller, llm, { attachments: fakeAttachments() })
+	apply(ctx, { vision: VISION })
+	await flush()
+	assert.equal(ctx.logs.warn.length, 0, 'a missing llm/settings service is not a warning')
+	await controller.prompt({ sessionId: 's1', content: IMAGE })
+	assert.equal(llm.calls[0].provider, VISION.provider)
+})
+
+test('a skipped or failed endpoint write reports itself as not-synced, so it stays retryable', async () => {
+	const endpoint = readEndpoint(ENDPOINT, 'vision.endpoint', [])
+	const credentials = fakeCredentials()
+
+	// No settings service: nothing can be written, and the caller must be able to
+	// tell — an outcome that started with `endpoint-route-ok` would mark the
+	// endpoint as done for the process lifetime.
+	const skipped = await syncEndpoint({ credentials }, endpoint)
+	assert.equal(skipped.startsWith('endpoint-route-ok'), false, 'a skipped write is not reported as synced')
+
+	// A settings service that refuses the write: same contract.
+	const refusing = { async mutate() { throw new Error('read-only settings provider') } }
+	const failed = await syncEndpoint({ settings: refusing, credentials }, endpoint)
+	assert.equal(failed.startsWith('endpoint-route-ok'), false, 'a refused write is not reported as synced')
+
+	// And the real thing does report success, so the signature is only kept then.
+	const accepting = fakeSettings()
+	const ok = await syncEndpoint({ settings: accepting, credentials }, endpoint)
+	assert.equal(ok.startsWith('endpoint-route-ok'), true, 'a completed write is reported as synced')
+	assert.equal(accepting.mutations.length, 1)
+	assert.deepEqual(credentials.sets, [{ ref: ENDPOINT_KEY_REF, value: 'sk-card-typed' }])
 })

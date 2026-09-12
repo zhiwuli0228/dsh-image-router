@@ -31,6 +31,59 @@ qwen-token-plan-cn / qwen3.8-flash   ← 一次旁路调用（不改会话路由
 
 `auto` / `sticky` 是旧的模式名，仍被接受并映射到 `switch`。
 
+## 配置视觉路由：两条路，都不需要手写 YAML
+
+图片发给谁，由 `vision` 决定。它有**两档**，装好后可以在 **设置 → 插件 → 插件配置** 的卡片里直接切换：
+
+### ① 用这个部署里已经配好的模型
+
+卡片会列出**你已经配置过的模型**供点选，不用记 provider id：
+
+- 优先读 `$DSH_HOME/settings.yaml` 里 `llm-pi-ai` 段已经声明了 `models` 的路由（这正是**设置 → 模型**页写的那些）；
+- 没有的话退回到 `remote.llm.discoverModels` 逐个询问当前已注册的 provider；
+- 下拉里找不到就手填 `provider` / `model`（目录型的路由可以服务卡片枚举不到的模型）。
+
+对应的配置就是：
+
+```yaml
+- id: image-router
+  config:
+    vision: { provider: qwen-token-plan-cn, model: qwen3.8-flash }
+```
+
+### ② 自定义端点：填 baseURL + 模型 + API Key
+
+没有现成的视觉模型？卡片里切到「自定义端点」，只填三样东西：**地址、模型名、API Key**。
+
+插件**不自己实现协议**，也不自己存密钥 —— 它把这三样翻译成上游本来就有的东西：
+
+| 你填的 | 落到哪里 |
+|---|---|
+| baseURL / 协议 / 模型 / 显示名 | `$DSH_HOME/settings.yaml` → `llm-pi-ai.providers.image-router-vision`（**只写这一条路径**，你原有的 provider 一个字节都不动） |
+| API Key | 凭据库 `$DSH_HOME/.credentials.yaml` → `refs.IMAGE_ROUTER_VISION_API_KEY`；路由里只留**引用名** |
+| 图片能力声明 | 模型条目上的 `input: [text, image]` |
+
+也就是说：线协议、模型发现、图片投影、重试全都由 `@deepseek-ai/dsh-llm-pi-ai` 负责，本插件只是"把卡片上的三个字段写成 DSH 的配置"。因此 `dsh web` **不需要重启**，下一次判定就用新路由。
+
+```yaml
+- id: image-router
+  config:
+    vision:
+      endpoint:
+        baseURL: https://gateway.example/v1
+        model: gpt-4o-mini
+        api: openai-completions   # 可选：openai-completions / openai-responses / anthropic-messages
+        apiKey: sk-…              # 可选：写入凭据库后即从配置里消失（只写不读）
+```
+
+几个值得知道的细节：
+
+- **`endpoint` 优先于 `provider/model`**；两者都在时用显式的 `provider/model`，所以老配置不会被动改变行为。
+- **API Key 是只写字段**：Host 收到后写进凭据库，不回显、不写进本插件的配置，也不进 trace。
+- **别关掉「声明支持图片输入」**：pi-ai 对自定义路由的默认模态是 `["text"]`，关掉之后发过去的图片会被投影成占位文字，端点收不到图。
+- 想在**设置 → 模型**里管理这条路由也行：它就是一条普通的 `llm-pi-ai` 路由，`displayName`、超时、协议都能在那边继续改。
+- 卡片会在审计文件里留一行 `endpoint-route-live … modalities=text+image`，用来回答"我配的端点到底生效了吗"。
+
 ## 按需工具 `describe_image`
 
 插件注册一个模型可调的工具（`tool: true`，默认开启）：
@@ -48,15 +101,22 @@ describe_image(file_path: string, question?: string) -> string
 
 插件注册了一个设置命名空间 `image-router`，并自带浏览器一半：装上后 **设置 → 插件 → 插件配置** 里会出现一张 `image-router · 图片旁路识别` 卡片。
 
+卡片里的 vision 路由有两档（详见上面「配置视觉路由」）：
+
+- **① 已配置模型**：从 `llm-pi-ai` 设置段 + `remote.llm.discoverModels` 汇总出的下拉，点选即可，另有 `provider` / `model` 手填兜底。
+- **② 自定义端点**：填 `baseURL` / `model` / `apiKey`（+ 可选协议、显示名、凭据引用名）。保存后由宿主写进 `llm-pi-ai` 与凭据库，**不重启**即可用。
+
 | 卡片字段 | 生效时机 |
 |---|---|
-| `mode`、`vision.provider`、`vision.model`、`instruction`、`maxTokens`、`timeoutMs`、`label` | **保存后立即生效** —— 下一次提示词、下一次旁路调用、下一次工具调用就用新值，不需要重启 |
+| `mode`、`vision`（两档都算）、`instruction`、`maxTokens`、`timeoutMs`、`label` | **保存后立即生效** —— 下一次提示词、下一次旁路调用、下一次工具调用就用新值，不需要重启 |
 | `tool`（是否注册 `describe_image`）、`traceFile`（审计文件路径） | 挂载时确定，改动需要重启 `dsh web`（卡片里没有这两项，免得承诺做不到的事） |
 
 - **卡片显示的是当前生效值**：profile 补丁层的配置作为该设置节的 base，卡片里的保存只是叠在它之上的一层覆盖（落在 `$DSH_HOME/settings.yaml` 的 `image-router:` 段）。
 - **写坏不会破坏正在工作的插件**：校验失败的覆盖会被忽略，继续用上一份好配置，并在审计文件里记一行 `settings-invalid …`。
+- **端点档只写自己那一条路径**：用 `settings.mutate('llm-pi-ai', [{op:'set', path:['providers','image-router-vision']}])`，你原有的 provider 不会被整体覆盖；撤掉端点档时发的是对应的 `unset`，凭据保留（可能还想复用）。
 - 两半必须用同一个 namespace：宿主 `lib/settings.js` 的 `SETTINGS_NAMESPACE` 与浏览器 `client/client.js` 的 `NAMESPACE`。
 - 宿主侧只走 `ctx.inject(['settings'])` + `settings.register(ns, schema, { base })`：**绝不 import `@deepseek-ai/dsh-settings` 的命名导出** —— 上游删过 `installSettingsSection`，而缺失的命名导出是模块求值期 SyntaxError，会让宿主启动失败退出 1（dshmarket 踩过这个坑）。
+- 浏览器一半靠 `ctx.remote`（来自 `dsh-api-remotes`，已写进本包 `dsh.client.inject`）读取模型清单；没有远端服务的部署会退化成纯手填，卡片照常渲染。
 - 只有注册了命名空间**且**有浏览器一半注册 `settings.plugin.item` 卡片的插件才会出现在那个页面：两者缺一都不会渲染任何东西。
 
 ## 为什么需要它
@@ -82,12 +142,17 @@ digest 模式在**准入之前**就把图片换成文字，所以它同时绕过
 4. **失败就保留图片**：视觉调用失败（配额、超时、报错）时不替换，把原请求交给原路径，让它给出**真实的**错误（例如 provider 的 429 或模态拒绝），而不是被插件掩盖。
 5. **替换文本里不放文件名**：`shot.png` 这种名字会被模型当成可读路径去调 `read_image`，在纯文本模型上换来一条没必要的报错。文件名只留在审计文件里。
 6. **必须用可选注入**：`sessionController` 只由 `dsh-web-app` 提供；顶层 `inject` 会让 headless/sdk/acp profile 启动失败（`1 entry did not activate`）。因此用 `ctx.inject(['sessionController'], …)`。
+7. **端点档要等三个服务一起就绪**：`ctx.inject(['llm', 'settings', 'credentials'], …)`。只等 `llm` 是个真实的坑 —— 那个回调在 entry 激活时就跑，此时设置节还没注册，`get('settings')` 返回 `undefined`，端点同步被静默跳过，于是在"有 settings 服务的部署"里也永远写不进去（实测踩到，审计里那行 `endpoint-services settings=no` 就是它）。
+8. **"跳过"不能算"已完成"**：同步只在真正落盘（`endpoint-route-ok`）后才记下签名，否则一次过早的跳过会让签名永久命中缓存，端点再也不会重试。
+9. **密钥只写不读**：`apiKey` 从配置里取走后立即从内存副本上剥掉（不改共享的已解析配置对象），并且**不参与**签名比对 —— 否则同一个端点会不断被判定为"变了"而重复写凭据。
+10. **自定义路由必须声明图片模态**：pi-ai 的 `defaultInput` 是 `["text"]`，所以路由的模型条目不写 `input: [text, image]` 就会被当成纯文本模型，图片会被投影成占位文字而不是发到端点。卡片默认开这个开关。
+11. **解析探测留痕**：写完后做一次只读的 `llm.resolveModelInfo(provider, model)`，把结果写进审计（`endpoint-route-live … modalities=text+image`）—— 这是"我配的端点到底生效没有"唯一可读的答案。
 
 ## 已验证
 
 | 环节 | 结论 |
 |---|---|
-| 单测（digest 替换 / 失败保留 / 多图合并 / dryRun / 工具调用 / 设置覆盖 / 开关模式状态机 / 安全降级 / 审计） | ✅ 35 个用例通过 |
+| 单测（digest 替换 / 失败保留 / 多图合并 / dryRun / 工具调用 / 设置覆盖 / 开关模式状态机 / 安全降级 / 审计 / 自定义端点档） | ✅ 46 个用例通过 |
 | 挂载进真实 web-profile 树 | ✅ 隔离实例冷启动，审计写 `mounted mode=digest …` |
 | **标准 bundle 形态可装载**（包名进 `dsh.profile.bundles` → 包内 `dsh.bundle.patch` → 部署层 config 覆盖 → `Config` 补默认值） | ✅ 隔离实例冷启动实测，`schemastery` 与回退 Standard Schema 两条路径都跑过 |
 | 无 `sessionController` 的 profile 仍能启动 | ✅ headless 冷启动 `exit=0`，审计只有 `apply-entered` |
@@ -95,7 +160,9 @@ digest 模式在**准入之前**就把图片换成文字，所以它同时绕过
 | **`describe_image` 注册 + 执行全链路** | ✅ 隔离实例实测（下方输出） |
 | switch 端到端（借出→保持→归还） | ✅ 隔离实例实测（`router-sequence-probe`） |
 | 设置命名空间注册 | ✅ 隔离实例实测（审计写 `settings-registered ns=image-router`） |
-| 浏览器半被发现并提供 | ✅ 隔离实例实测（boot manifest 的 combo 清单含 `dsh-image-router/client.js`，取回 200 且内容含本插件模块）；**卡片外观**需你在 GUI 里看一眼 |
+| **自定义端点档写进上游**（真实 web profile，非 mock 服务） | ✅ 隔离实例实测：`settings.yaml` 出现 `providers.image-router-vision`（含 `apiKeyEnv` 引用与 `input: [text, image]`），`.credentials.yaml` 的 `refs` 出现 `IMAGE_ROUTER_VISION_API_KEY`，原有 provider 未变 |
+| **端点档写完后路由真的可用** | ✅ 同一实例审计写 `endpoint-route-live provider=image-router-vision model=mock-vision modalities=text+image` |
+| 浏览器半被发现并提供 | ✅ 隔离实例实测（boot manifest 的 combo 清单含 `dsh-image-router/client.js`，取回 200 且内容含本插件模块）；卡片两档的渲染用 React 替身跑过（下拉/端点字段/控件数），**视觉外观**需你在 GUI 里看一眼 |
 
 digest 端到端实测输出（`tools/digest-probe.mjs`）：
 
@@ -137,6 +204,7 @@ dsh plugin --profile web add dsh-image-router
 #    - id: image-router
 #      config:
 #        vision: { provider: <provider>, model: <vision-model> }
+#    没有现成的视觉模型也可以只给端点，见下面「配置视觉路由」的 ②。
 ```
 
 ### B. 从 GitHub 安装（等价形态）
@@ -186,16 +254,19 @@ dsh plugin --profile web add file:E:\path\to\dsh-image-router
 
 ### 为什么包内不需要 `node_modules`
 
-`Config` 采用双形态：宿主能解析 `@deepseek-ai/schemastery`（正常安装，profile 的 `node_modules` 里本来就有）时用它；解析不到时退回一个**等价的 Standard Schema**。Cordis 只通过 Standard Schema 接口消费插件配置（`cordis/lib/index.js`：`runtime.Config['~standard'].validate(config)`），所以两种形态下 loader 校验、默认值、GUI 读取的行为一致 —— 这也是按路径挂载（模块 realpath 在工作区、没有 `node_modules` 可回溯）仍然可用的原因。
+`Config` 采用双形态：宿主能解析 `@deepseek-ai/schemastery` 时用它；解析不到时退回一个**既符合 Standard Schema、又可调用**的等价物。两个消费者要的东西不同：
 
-`@deepseek-ai/schemastery` 因此声明为**可选 peerDependency**（不拉取、用宿主自带），见 `package.json`。
+- **Cordis（loader）** 只通过 Standard Schema 接口消费插件配置（`cordis/lib/index.js`：`runtime.Config['~standard'].validate(config)`）；
+- **settings 服务**把它当成 **schemastery 风格的可调用 schema**（`settings.register(ns, schema, { base })` 之后会调用它来解析默认值）。只带 `~standard` 的普通对象在那边会抛 `TypeError: schema is not a function`，而这个部署就丢掉整个可编辑设置节 —— 实测确实如此，所以回退形态现在是可调用的函数。
+
+`schemastery` 之所以不能假定存在：这个 `import` 从**本文件自己的位置**解析，而 pnpm 安装的 profile 把每个依赖都收在 `.pnpm` 下，一个不依赖 schemastery 的插件在那里找不到它 —— 这也正是"按绝对路径挂载"能成立的原因。`@deepseek-ai/schemastery` 因此声明为**可选 peerDependency**（不拉取、用宿主自带），见 `package.json`。
 
 ## 配置项
 
 | 键 | 默认 | 说明 |
 |---|---|---|
 | `mode` | `digest` | `digest`＝旁路分析并替换文字（不改模型）；`switch`＝临时借用视觉路由 |
-| `vision` | 必填 | 旁路调用的路由：`provider` / `model` / 可选 `reasoningEffort` |
+| `vision` | 必填（二选一） | 旁路调用的路由。**①** `provider` / `model` / 可选 `reasoningEffort`；**②** `endpoint: { baseURL, model, api?, name?, apiKey?, apiKeyEnv?, images? }` —— 由宿主翻译成上游 `llm-pi-ai` 的一条路由。两者同时存在时 ① 优先 |
 | `instruction` | 内置（提取文字 + 描述画面） | 给视觉模型的指令 |
 | `maxTokens` | `900` | 分析结果上限 |
 | `timeoutMs` | `120000` | 单次旁路调用的超时 |
@@ -244,7 +315,7 @@ node test/routing.test.js    # 单进程直跑：没有管道支持的沙箱里�
 
 > `node --test test/` **不可移植**：Node 20 会扫描目录，Node 22+ 把 `test/` 当成单个入口文件去加载而报 `MODULE_NOT_FOUND`（CI 就是靠多版本矩阵抓到这个的）。
 
-35 个用例：配置归一化与校验（含旧模式名映射、schema 物化出的空对象/空数组）、图片信号判定、digest 的替换/多图合并/失败保留/无图直通/dryRun/落盘失败、`describe_image` 的注册/读文件/问题透传/缺文件与目录与非图片的拒绝、设置节的注册与「保存后下一轮即生效」、校验失败的覆盖被忽略、switch 的借出‑归还‑放弃状态机、手选模型不被覆盖、`holdTurns`、`sticky`、路由校验与缓存、冷会话不路由也不告警、门面两种布局、审计可写与不可写、无 `sessionController` 时不包装、卸载恢复。
+46 个用例：配置归一化与校验（含旧模式名映射、schema 物化出的空对象/空数组、端点档补齐 vision 路由与两档优先级）、图片信号判定、digest 的替换/多图合并/失败保留/无图直通/dryRun/落盘失败、`describe_image` 的注册/读文件/问题透传/缺文件与目录与非图片的拒绝、设置节的注册与「保存后下一轮即生效」、校验失败的覆盖被忽略、自定义端点写入上游路由与凭据（含"跳过/失败不得记为已同步"这一可重试契约）、switch 的借出‑归还‑放弃状态机、手选模型不被覆盖、`holdTurns`、`sticky`、路由校验与缓存、冷会话不路由也不告警、门面两种布局、审计可写与不可写、无 `sessionController` 时不包装、卸载恢复。
 
 CI（`.github/workflows/ci.yml`）在 Ubuntu + Windows × Node 20/22/24 上跑同一套用例，并校验「`dsh.bundle.patch` 指向的文件存在、入口导出 `name`/`Config`/`apply`」这条打包契约。
 
