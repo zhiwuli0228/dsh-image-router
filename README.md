@@ -122,10 +122,27 @@ execute ok, 113 chars:
 
 这是一个**标准 DSH bundle 插件包**：`package.json` 声明 `dsh.bundle.patch`，包内 `cordis.patch.yml` 只插入一条 loader 条目（部署无关，默认值全在 `Config` 里）。
 
-### A. 从 GitHub 安装（推荐）
+### A. 从 npm 安装（推荐）
+
+已发布：[`dsh-image-router`](https://www.npmjs.com/package/dsh-image-router)（MIT）。
 
 ```powershell
-# 1. 装进 profile（pnpm 转发；github: 形式也可以换成 npm 包名或本地 link:）
+# 1. 装进 profile
+dsh plugin --profile web add dsh-image-router
+
+# 2. 把包名加进 profile 的 bundles 列表
+#    $DSH_HOME/profiles/web/package.json → dsh.profile.bundles: [..., "dsh-image-router"]
+
+# 3. 在 profile 的 cordis.patch.yml 里写配置覆盖（完整示例见 examples/cordis.patch.yml）
+#    - id: image-router
+#      config:
+#        vision: { provider: <provider>, model: <vision-model> }
+```
+
+### B. 从 GitHub 安装（等价形态）
+
+```powershell
+# 1. 装进 profile（pnpm 转发；也能换成本地 link:）
 dsh plugin --profile web add github:zhiwuli0228/dsh-image-router
 
 # 2. 把包名加进 profile 的 bundles 列表
@@ -148,7 +165,7 @@ dsh plugin --profile web add file:E:\path\to\dsh-image-router
 
 然后重启 `dsh web`。
 
-### B. 本地开发 / 不想装依赖：按路径挂载
+### C. 本地开发 / 不想装依赖：按路径挂载
 
 零安装，只要把仓库放在磁盘上：
 
