@@ -1,0 +1,7 @@
+# Keep the repository byte-identical across platforms: this is source plus YAML
+# patch files, and a Windows checkout converting LF to CRLF would show every file
+# as modified on the next diff.
+* text=auto eol=lf
+
+# The probe image is the one binary the repo carries (a test asset).
+*.png binary

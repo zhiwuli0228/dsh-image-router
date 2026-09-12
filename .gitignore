@@ -1,0 +1,22 @@
+# Plugin audit output and local run artifacts
+trace.log
+trace-*.log
+probe-report.log
+
+# Profile backups written while editing a deployment's patch layer
+*.bak-*
+
+# Isolated verification homes
+.vrtest-home/
+
+# Dependencies (this package has none at runtime; the host provides schemastery)
+node_modules/
+pnpm-lock.yaml
+package-lock.json
+yarn.lock
+
+# Editor / OS noise
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

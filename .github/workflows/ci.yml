@@ -1,0 +1,53 @@
+# CI for dsh-vision-router: the plugin is plain ESM with no runtime dependencies,
+# so the whole suite runs on stock Node without installing anything.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        node: ['20', '22', '24']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      # `node --test` runs each test file in a child process; the suite is also
+      # runnable in one process, which is what sandboxes without pipe support need.
+      - name: Run the suite
+        run: node --test test/
+      - name: Run the suite in-process
+        run: node test/routing.test.js
+
+  lint-manifests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      # A bundle plugin is only loadable if its manifest points at a patch file
+      # that exists and parses, so guard the packaging contract itself.
+      - name: Check the bundle manifest
+        run: |
+          node --input-type=module -e "
+            import { readFileSync } from 'node:fs'
+            const manifest = JSON.parse(readFileSync('package.json', 'utf8'))
+            const patch = manifest.dsh?.bundle?.patch
+            if (typeof patch !== 'string') throw new Error('package.json must declare dsh.bundle.patch')
+            readFileSync(patch, 'utf8')
+            const entry = readFileSync('lib/index.js', 'utf8')
+            for (const token of ['export const name', 'export const Config', 'export function apply']) {
+              if (!entry.includes(token)) throw new Error('lib/index.js is missing ' + token)
+            }
+            console.log('manifest ok:', manifest.name, manifest.version, '->', patch)
+          "
