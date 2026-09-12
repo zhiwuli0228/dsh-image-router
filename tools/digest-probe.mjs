@@ -2,7 +2,7 @@
  * One-off diagnostic plugin: prove digest mode in a live profile tree — the
  * session model must stay put while the prompt's image becomes analysis text.
  *
- * This file is a development tool for dsh-vision-router, not part of the plugin.
+ * This file is a development tool for dsh-image-router, not part of the plugin.
  */
 import { appendFileSync, readFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'

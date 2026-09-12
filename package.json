@@ -1,5 +1,5 @@
 {
-  "name": "dsh-vision-router",
+  "name": "dsh-image-router",
   "version": "0.1.0",
   "description": "DeepSeek Harness plugin: analyse images out of band with a vision model — pasted images are digested into text before admission and a describe_image tool covers image paths, all without ever changing the session's model.",
   "license": "MIT",
@@ -39,12 +39,12 @@
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/zhiwuli0228/dsh-vision-router.git"
+    "url": "git+https://github.com/zhiwuli0228/dsh-image-router.git"
   },
   "bugs": {
-    "url": "https://github.com/zhiwuli0228/dsh-vision-router/issues"
+    "url": "https://github.com/zhiwuli0228/dsh-image-router/issues"
   },
-  "homepage": "https://github.com/zhiwuli0228/dsh-vision-router#readme",
+  "homepage": "https://github.com/zhiwuli0228/dsh-image-router#readme",
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"

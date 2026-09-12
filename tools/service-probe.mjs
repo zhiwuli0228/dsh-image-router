@@ -2,7 +2,7 @@
  * One-off diagnostic plugin: report which DSH service actually exposes the
  * session model-selection methods, from inside a live profile tree.
  *
- * This file is a development tool for dsh-vision-router, not part of the plugin.
+ * This file is a development tool for dsh-image-router, not part of the plugin.
  */
 import { appendFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'

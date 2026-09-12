@@ -1,4 +1,4 @@
-# dsh-vision-router — configuration examples.
+# dsh-image-router — configuration examples.
 #
 # The package's own patch layer inserts the loader entry with no config, so every
 # value below is an override you add to YOUR layer:
@@ -11,7 +11,7 @@
 # itself with a readable warning, so nothing here is load-bearing for the boot.
 #
 # ── 1. Minimal: images are digested to text, session model untouched ──────────
-- id: vision-router
+- id: image-router
   config:
     mode: digest
     vision:
@@ -19,7 +19,7 @@
       model: qwen3.8-flash
 
 # ── 2. Everything a digest deployment can tune ────────────────────────────────
-# - id: vision-router
+# - id: image-router
 #   config:
 #     enabled: true
 #     mode: digest
@@ -38,12 +38,12 @@
 #     # Register the `describe_image` tool (image paths, works on text-only models).
 #     tool: true
 #     # Audit every decision to this file.
-#     traceFile: '/home/me/.dsh/vision-router.log'
+#     traceFile: '/home/me/.dsh/image-router.log'
 #     # Log decisions without calling the vision model.
 #     dryRun: false
 
 # ── 3. Opt-in legacy policy: lend the session route for image turns ───────────
-# - id: vision-router
+# - id: image-router
 #   config:
 #     mode: switch
 #     vision:
@@ -60,8 +60,8 @@
 # Replace the package name with the path to lib/index.js. Absolute and ./-relative
 # paths are accepted in an insert row (the loader turns them into file URLs).
 # - insert:
-#     - id: vision-router
-#       name: './dsh-vision-router/lib/index.js'
+#     - id: image-router
+#       name: './dsh-image-router/lib/index.js'
 #       config:
 #         vision:
 #           provider: qwen-token-plan-cn

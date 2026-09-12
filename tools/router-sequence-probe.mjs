@@ -2,7 +2,7 @@
  * One-off diagnostic plugin: drive a real prompt sequence through the live
  * session controller and record which route each turn actually ran on.
  *
- * This file is a development tool for dsh-vision-router, not part of the plugin.
+ * This file is a development tool for dsh-image-router, not part of the plugin.
  */
 import { appendFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
@@ -15,7 +15,7 @@ const REPORT = join(resolve(dirname(fileURLToPath(import.meta.url)), '..'), 'pro
 
 /** The session workspace the probe creates its session in. */
 const CWD = process.cwd()
-const SESSION = 'probe-vision-router'
+const SESSION = 'probe-image-router'
 
 const say = (line) => {
 	try {

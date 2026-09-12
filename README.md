@@ -1,4 +1,4 @@
-# dsh-vision-router
+# dsh-image-router
 
 给 DeepSeek Harness 用的**图片旁路识别**插件：图片交给视觉模型分析一次，把结果作为文字放回提示词 —— **你的会话模型自始至终不变**。
 
@@ -60,7 +60,7 @@ digest 模式在**准入之前**就把图片换成文字，所以它同时绕过
 
 1. **准入前替换**：包装 `sessionController.prompt`，在调用原方法之前改写 `request.content`。图片块被移除、替换成一段文字 —— 因此准入校验看不到图片，不会拒绝、也不需要改模型。
 2. **图片内容的两种形态**：wire 形态 `{ type:'image', mediaType, data(base64), name? }`；准入后形态 `{ type:'image', attachment: ImageAttachmentRef }`。插件用 `ctx.attachments.admitPromptContent(images)` 把前者落盘成后者（`dsh-attachment/lib/types/types.d.ts:89-113`）。
-3. **旁路调用是标准一次性请求**：`ctx.llm.stream({ provider, model, messages, maxTokens, sessionId, signal })`，消息为 `{ id, role:'user', source:{kind:'plugin', plugin:'vision-router'}, content:[{type:'text',…},{type:'image',attachment:ref}] }`。端点、凭证、重试策略、附件解析全部复用部署自己的配置。
+3. **旁路调用是标准一次性请求**：`ctx.llm.stream({ provider, model, messages, maxTokens, sessionId, signal })`，消息为 `{ id, role:'user', source:{kind:'plugin', plugin:'image-router'}, content:[{type:'text',…},{type:'image',attachment:ref}] }`。端点、凭证、重试策略、附件解析全部复用部署自己的配置。
    - **不传 `purpose`**：它的类型是封闭枚举 `'compaction' | 'session-title'`（`dsh-llm/lib/types/types.d.ts:443`），自定义值不合法。
    - `signal` 是 `AbortSignal.any([调用方 signal, AbortSignal.timeout(timeoutMs)])`，取消与超时都生效。
    - 这次调用**不写入会话日志**（对比 `dsh-session-title-llm` 会 append 一条 `session/title-llm-request`）。
@@ -109,13 +109,13 @@ execute ok, 113 chars:
 
 ```powershell
 # 1. 装进 profile（pnpm 转发；github: 形式也可以换成 npm 包名或本地 link:）
-dsh plugin --profile web add github:zhiwuli0228/dsh-vision-router
+dsh plugin --profile web add github:zhiwuli0228/dsh-image-router
 
 # 2. 把包名加进 profile 的 bundles 列表
-#    $DSH_HOME/profiles/web/package.json → dsh.profile.bundles: [..., "dsh-vision-router"]
+#    $DSH_HOME/profiles/web/package.json → dsh.profile.bundles: [..., "dsh-image-router"]
 
 # 3. 在 profile 的 cordis.patch.yml 里写配置覆盖（完整示例见 examples/cordis.patch.yml）
-#    - id: vision-router
+#    - id: image-router
 #      config:
 #        vision: { provider: <provider>, model: <vision-model> }
 ```
@@ -129,7 +129,7 @@ dsh plugin --profile web add github:zhiwuli0228/dsh-vision-router
 ```yaml
 # $DSH_HOME/profiles/web/cordis.patch.yml
 - insert:
-    - id: vision-router
+    - id: image-router
       name: '<repo>\lib\index.js'      # 绝对路径或 ./-相对路径都接受
       config:
         mode: digest

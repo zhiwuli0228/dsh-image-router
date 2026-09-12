@@ -2,7 +2,7 @@
  * One-off diagnostic plugin: fetch `describe_image` from the live tool registry
  * and execute it against a real file, proving the whole call path.
  *
- * This file is a development tool for dsh-vision-router, not part of the plugin.
+ * This file is a development tool for dsh-image-router, not part of the plugin.
  */
 import { appendFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
@@ -43,7 +43,7 @@ export function apply(ctx) {
 				const agent = { session: { header: { id: 'probe-tool-session', cwd: CWD } } }
 				const signal = new AbortController().signal
 				try {
-					const text = await definition.execute({ file_path: 'dsh-vision-router/probe.png' }, { signal, agent })
+					const text = await definition.execute({ file_path: 'dsh-image-router/probe.png' }, { signal, agent })
 					say(`execute ok, ${text.length} chars:`)
 					say(text.slice(0, 600))
 				} catch (error) {

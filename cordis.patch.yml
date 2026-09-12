@@ -1,4 +1,4 @@
-# dsh-vision-router profile patch layer — insert one loader entry for the plugin
+# dsh-image-router profile patch layer — insert one loader entry for the plugin
 # package, exactly like the shipped plugin bundles. The entry is a normal cordis
 # loader entry (id + package name); every default lives in the package's own
 # `Config` schema, so this layer stays deployment-neutral.
@@ -8,5 +8,5 @@
 # without a `vision` route the plugin activates and disables itself with a
 # readable warning, so a bare mount is safe.
 - insert:
-    - id: vision-router
-      name: 'dsh-vision-router'
+    - id: image-router
+      name: 'dsh-image-router'

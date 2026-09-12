@@ -2,7 +2,7 @@
  * Two-phase diagnostic plugin: compare the agent-resolution shapes for a fresh
  * session and for a session that was persisted and resumed by a later process.
  *
- * This file is a development tool for dsh-vision-router, not part of the plugin.
+ * This file is a development tool for dsh-image-router, not part of the plugin.
  */
 import { appendFileSync, existsSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
@@ -15,7 +15,7 @@ const REPORT = join(resolve(dirname(fileURLToPath(import.meta.url)), '..'), 'pro
 
 /** The session workspace the probe creates its session in. */
 const CWD = process.cwd()
-const SESSION = 'probe-vision-router'
+const SESSION = 'probe-image-router'
 
 const say = (line) => {
 	try {

@@ -297,7 +297,7 @@ test('digest mode sends the admitted images to the vision route as a one-shot ca
 	const controller = fakeController({ noSelectionApi: true })
 	const llm = fakeLlm()
 	const attachments = fakeAttachments()
-	const trace = join(mkdtempSync(join(tmpdir(), 'vision-router-digest-')), 'trace.log')
+	const trace = join(mkdtempSync(join(tmpdir(), 'image-router-digest-')), 'trace.log')
 	const ctx = fakeContext(controller, llm, { attachments })
 	apply(ctx, { vision: VISION, traceFile: trace, maxTokens: 321 })
 
@@ -336,7 +336,7 @@ test('digest mode keeps the image when the vision call fails', async () => {
 	const controller = fakeController({ noSelectionApi: true })
 	const llm = fakeLlm({ chunks: [{ type: 'text-delta', text: 'partial' }, { type: 'finish', reason: 'error' }] })
 	const attachments = fakeAttachments()
-	const trace = join(mkdtempSync(join(tmpdir(), 'vision-router-fail-')), 'trace.log')
+	const trace = join(mkdtempSync(join(tmpdir(), 'image-router-fail-')), 'trace.log')
 	const ctx = fakeContext(controller, llm, { attachments })
 	apply(ctx, { vision: VISION, traceFile: trace })
 
@@ -394,7 +394,7 @@ test('digest mode makes no vision call under dryRun', async () => {
 	const controller = fakeController({ noSelectionApi: true })
 	const llm = fakeLlm()
 	const attachments = fakeAttachments()
-	const trace = join(mkdtempSync(join(tmpdir(), 'vision-router-dry-')), 'trace.log')
+	const trace = join(mkdtempSync(join(tmpdir(), 'image-router-dry-')), 'trace.log')
 	const ctx = fakeContext(controller, llm, { attachments })
 	apply(ctx, { vision: VISION, dryRun: true, traceFile: trace })
 
@@ -409,7 +409,7 @@ test('digest mode makes no vision call under dryRun', async () => {
 test('digest mode survives an unusable attachment store', async () => {
 	const controller = fakeController({ noSelectionApi: true })
 	const llm = fakeLlm()
-	const trace = join(mkdtempSync(join(tmpdir(), 'vision-router-admit-')), 'trace.log')
+	const trace = join(mkdtempSync(join(tmpdir(), 'image-router-admit-')), 'trace.log')
 	const ctx = fakeContext(controller, llm, { attachments: fakeAttachments({ fail: true }) })
 	apply(ctx, { vision: VISION, traceFile: trace })
 
@@ -510,7 +510,7 @@ test('switch mode validates routes through the llm service and installs the reso
 })
 
 test('switch mode leaves a cold session unrouted instead of failing', async () => {
-	const dir = mkdtempSync(join(tmpdir(), 'vision-router-cold-'))
+	const dir = mkdtempSync(join(tmpdir(), 'image-router-cold-'))
 	const trace = join(dir, 'trace.log')
 	const controller = fakeController({ resolveError: new Error('session/not-found') })
 	const ctx = fakeContext(controller)
@@ -570,7 +570,7 @@ test('apply disables itself on unusable configuration instead of throwing', () =
 })
 
 test('apply writes an audit trail for switch mode and survives an unwritable one', async () => {
-	const dir = mkdtempSync(join(tmpdir(), 'vision-router-'))
+	const dir = mkdtempSync(join(tmpdir(), 'image-router-'))
 	const traceFile = join(dir, 'trace.log')
 	const controller = fakeController()
 	const ctx = fakeContext(controller)
@@ -650,7 +650,7 @@ test('describe_image reads a file and returns the vision analysis', async () => 
 	const llm = fakeLlm()
 	const attachments = fakeAttachments()
 	const fs = fakeFs()
-	const trace = join(mkdtempSync(join(tmpdir(), 'vision-router-tool-')), 'trace.log')
+	const trace = join(mkdtempSync(join(tmpdir(), 'image-router-tool-')), 'trace.log')
 	const ctx = fakeContext(controller, llm, { tools, attachments, fs })
 	apply(ctx, { vision: VISION, traceFile: trace })
 
