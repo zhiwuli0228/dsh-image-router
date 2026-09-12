@@ -1,12 +1,14 @@
 # dsh-image-router
 
 > [!IMPORTANT]
-> **当前版本 `0.4.2`，适配 DSH `0.1.5-rc.1+`（已在 `0.1.5-rc.1` 上真机验证）。**
-> npm 上的 `dsh-image-router` 仍是早期的 `0.1.0`（那个版本会让「设置 → 模型」页加载失败），**请用下面的 GitHub 方式安装**，直到它被重新发布。
+> **当前版本 `0.4.2`，已发布到 npm，适配 DSH `0.1.5-rc.1+`（已在 `0.1.5-rc.1` 上真机验证）。**
+> 若你装到的是更早的 `0.1.0`，那是本插件的第一个（已废弃的）构建，会让「设置 → 模型」页加载失败 —— 用 `dsh plugin --profile web add dsh-image-router@latest` 明确装最新版即可。
 
 <div align="center">
   <b style="font-size: 1.15em;">让纯文本模型也能「看图」</b><br />
   图片在进入会话之前，先由你指定的视觉模型转成文字 —— <b>你的会话模型自始至终不变</b>，模型选择器也不会跳。<br /><br />
+  <a href="https://www.npmjs.com/package/dsh-image-router"><img alt="npm version" src="https://img.shields.io/npm/v/dsh-image-router" /></a>
+  <a href="https://www.npmjs.com/package/dsh-image-router"><img alt="npm downloads" src="https://img.shields.io/npm/dm/dsh-image-router" /></a>
   <a href="https://github.com/zhiwuli0228/dsh-image-router/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/zhiwuli0228/dsh-image-router/actions/workflows/ci.yml/badge.svg" /></a>
   <a href="https://opensource.org/licenses/MIT"><img alt="License: MIT" src="https://img.shields.io/badge/License-MIT-yellow.svg" /></a>
   <a href="https://github.com/zhiwuli0228/dsh-image-router/stargazers"><img alt="GitHub stars" src="https://img.shields.io/github/stars/zhiwuli0228/dsh-image-router" /></a><br /><br />
@@ -46,16 +48,18 @@ qwen-token-plan-cn / qwen3.8-flash   ← 一次旁路调用（不改会话路由
 **方式一：命令行一条**
 
 ```sh
-dsh plugin --profile web add github:zhiwuli0228/dsh-image-router && dsh web
+dsh plugin --profile web add dsh-image-router && dsh web
 ```
 
 **就这一条。** `dsh plugin` 是 pnpm 的薄封装：它把包装进 profile，并**自动**把声明了 `dsh.bundle` 的依赖加进 `dsh.profile.bundles`（按已安装状态 reconcile），不需要手动编辑 `package.json`。卸载同理：`dsh plugin --profile web remove dsh-image-router`。
+
+> 不想走 npm？把 `dsh-image-router` 换成 `github:zhiwuli0228/dsh-image-router` 即为等价形态（前沿代码、未经 registry 校验）。
 
 **方式二：让 DSH 自己装** —— 把下面这段发给任意一个 DSH 会话：
 
 ```text
 帮我安装 dsh-image-router 图片旁路识别插件（DSH 插件，让纯文本模型也能看图），步骤：
-1. 执行 dsh plugin --profile web add github:zhiwuli0228/dsh-image-router
+1. 执行 dsh plugin --profile web add dsh-image-router
 2. 确认 dsh-image-router 已出现在 $DSH_HOME/profiles/web/package.json 的 dsh.profile.bundles 里
 3. 提醒我重启 dsh web
 4. 重启后告诉我：打开「设置 → 插件 → 插件配置 → image-router」，视觉模型那栏怎么填
@@ -75,7 +79,7 @@ dsh plugin --profile web add github:zhiwuli0228/dsh-image-router && dsh web
 <summary><b>更新</b></summary>
 
 ```sh
-dsh plugin --profile web add github:zhiwuli0228/dsh-image-router
+dsh plugin --profile web add dsh-image-router@latest
 ```
 
 改完**硬刷新浏览器**（Ctrl/Cmd+Shift+R）。配置项的改动不需要重启（保存后下一次判定即生效）；插件**代码**的改动需要重启 `dsh web`。
@@ -286,6 +290,7 @@ tools/            五个开发用探针（digest / tool / switch 序列 / 服务
 - 改代码走 PR（`feat/*` / `fix/*`）；纯文档可直接推 `main`。
 - 提交前自检：`node --test`，并确认 README 里描述的行为与代码一致 —— 本仓库的约定是**每条实现要点都来自实测**，README 里的「已验证」表也是这么攒出来的。
 - 报 bug 时请附上审计文件里对应的那几行（`mounted` / `config-resolved` / `digest` 或 `digest-failed`）—— 这条链路上的失败方式大多是静默的，那几行是唯一可读的线索。
+- **发版**：`npm version patch|minor` → 推 tag → 在仓库目录跑 `npm publish --access public`（账号是 `auth-and-writes` 2FA，需要交互式终端完成浏览器授权）。npm 对上传是**异步受理**：`PUT 202` 之后 packument 会先更新，tarball 与 `npm install` 可能还要几分钟才可用 —— 刚发完就装会看到 `ERR_PNPM_FETCH_404`，那是传播延迟，不是失败。
 
 ## 🧩 工作原理
 
