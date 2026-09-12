@@ -13,7 +13,7 @@ import { join } from 'node:path'
 import { test } from 'node:test'
 
 import { apply, Config, decideRoute, discoverVisionModels, modelAcceptsImages, nameLooksLikeImage, normalizeConfig, promptWantsVision, sameModel } from '../lib/index.js'
-import { ENDPOINT_APIS, ENDPOINT_KEY_REF, ENDPOINT_PROVIDER, readEndpoint, routeForEndpoint, syncEndpoint } from '../lib/endpoint.js'
+import { ENDPOINT_APIS, ENDPOINT_KEY_REF, ENDPOINT_PROVIDER, endpointSettingsOp, readEndpoint, routeForEndpoint, syncEndpoint } from '../lib/endpoint.js'
 
 const EXTENSIONS = ['png', 'jpg', 'jpeg', 'webp', 'gif']
 const VISION = { provider: 'qwen-token-plan-cn', model: 'qwen3.8-flash' }
@@ -1064,4 +1064,47 @@ test('discoverVisionModels answers empty without an llm service instead of throw
 	assert.deepEqual(await discoverVisionModels('anything', bare), [])
 	assert.deepEqual(await discoverVisionModels('anything', undefined), [])
 	assert.deepEqual(await discoverVisionModels('   ', { get: () => ({ listModels: async () => [] }) }), [])
+})
+
+// ── The write must not wreck a route the user also edits ────────────────────
+//
+// The generated route is a normal `llm-pi-ai` route, so the Models page can edit
+// it too. A settings `set` at this path replaces the whole profile object, so a
+// save from this card has to merge rather than overwrite.
+
+test('the endpoint write preserves fields the Models page added to the route', async () => {
+	const endpoint = readEndpoint(ENDPOINT, 'vision.endpoint', [])
+	const existing = {
+		displayName: 'Renamed By Hand',
+		headers: { 'x-tenant': 'acme' },
+		timeoutMs: 5_000,
+		compat: { thinkingFormat: 'deepseek' },
+		models: [{ id: 'stale-model', contextWindow: 1_000 }]
+	}
+	const op = endpointSettingsOp(endpoint, () => existing)
+
+	assert.equal(op.path[0], 'providers')
+	assert.equal(op.path[1], ENDPOINT_PROVIDER)
+	assert.deepEqual(op.value.headers, { 'x-tenant': 'acme' }, 'a deployment header survives the card save')
+	assert.equal(op.value.timeoutMs, 5_000, 'a route timeout set elsewhere survives')
+	assert.deepEqual(op.value.compat, { thinkingFormat: 'deepseek' })
+	// The fields this card owns still win.
+	assert.equal(op.value.baseURL, 'https://gateway.example/v1')
+	assert.equal(op.value.api, 'openai-completions')
+	assert.deepEqual(op.value.models, [{ id: 'my-vision-model', input: ['text', 'image'] }], 'the model list is rebuilt from the endpoint rather than merged')
+})
+
+test('the endpoint write falls back to a clean profile when no read is possible', () => {
+	const endpoint = readEndpoint(ENDPOINT, 'vision.endpoint', [])
+	const fromNothing = endpointSettingsOp(endpoint, () => undefined)
+	const fromJunk = endpointSettingsOp(endpoint, () => 'not-an-object')
+	const fromThrow = endpointSettingsOp(endpoint, () => {
+		throw new Error('settings namespace unavailable')
+	})
+	const expected = { baseURL: 'https://gateway.example/v1', api: 'openai-completions', apiKeyEnv: ENDPOINT_KEY_REF }
+	for (const op of [fromNothing, fromJunk, fromThrow]) {
+		assert.equal(op.value.baseURL, expected.baseURL)
+		assert.equal(op.value.api, expected.api)
+		assert.equal(op.value.apiKeyEnv, expected.apiKeyEnv)
+	}
 })
