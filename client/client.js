@@ -105,15 +105,29 @@ window.__ModuleLoader__.load({
 			return rows
 		}
 
-		/** Candidate rows discovered from live provider routes (fallback when nothing is configured). */
+		/**
+		 * Candidate rows discovered from live provider routes.
+		 *
+		 * `image-router` is this plugin's own settings namespace, where the Host
+		 * registers a discovery handler that answers with **only** the models whose
+		 * route declares image input (or whose id is a known vision family when the
+		 * route discloses nothing). The harness only falls back to a route's own
+		 * discovery when no handler answers for that namespace, so a resolved answer
+		 * means the list really was capability-filtered.
+		 *
+		 * @param remote - the Typert Remote table.
+		 * @returns `{ rows, filtered }`; `filtered` is false on the fallback path.
+		 */
 		async function discoverCandidates(remote) {
 			const providers = await remote.llm.listProviders()
-			if (!providers || providers.ok !== true) return []
+			if (!providers || providers.ok !== true) return { rows: [], filtered: false }
 			const rows = []
+			let filtered = false
 			for (const provider of providers.value) {
 				try {
 					const discovered = await remote.llm.discoverModels('image-router', { provider: provider.id })
 					if (!discovered || discovered.ok !== true) continue
+					filtered = true
 					for (const model of discovered.value) {
 						rows.push({ provider: provider.id, model: model.id, label: `${provider.name ?? provider.id} / ${model.id}`, source: 'discovered' })
 					}
@@ -121,7 +135,7 @@ window.__ModuleLoader__.load({
 					/* One unreachable provider must not empty the whole list. */
 				}
 			}
-			return rows
+			return { rows, filtered }
 		}
 
 		const styles = {
@@ -270,15 +284,17 @@ window.__ModuleLoader__.load({
 					const piAi = described && described.ok === true ? described.value?.namespaces?.[PI_AI_NAMESPACE] : undefined
 					const configured = routeCandidates(piAi?.value)
 					if (configured.length > 0) {
-						setCandidates({ rows: configured, note: `来自已配置的 ${PI_AI_NAMESPACE} 路由。` })
+						setCandidates({ rows: configured, note: `来自已配置的 ${PI_AI_NAMESPACE} 路由（${configured.length} 个模型）。` })
 						return
 					}
 					const discovered = await discoverCandidates(remote)
 					setCandidates({
-						rows: discovered,
-						note: discovered.length > 0
-							? '来自当前已注册的 provider。图片模型通常带 vision / vl / omni 等字样，请自行确认它支持图片输入。'
-							: '没有发现可枚举的模型。请到「设置 → 模型」添加一个支持图片的 provider，或在下面直接填写。'
+						rows: discovered.rows,
+						note: discovered.rows.length === 0
+							? '没有发现可枚举的图片模型。请到「设置 → 模型」添加一个支持图片的 provider，或在下面直接填写 provider / model。'
+							: discovered.filtered
+								? `已按图片能力筛选：${discovered.rows.length} 个模型（宿主读取各路由声明的模态）。`
+								: '来自当前已注册的 provider（未能按图片能力筛选）。图片模型通常带 vision / vl / omni 等字样，请自行确认。'
 					})
 				} catch (error) {
 					setCandidates({ rows: [], note: '读取模型列表失败：' + (error && error.message ? error.message : String(error)) + ' —— 你仍然可以手动填写。' })

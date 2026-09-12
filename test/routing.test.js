@@ -12,7 +12,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
 
-import { apply, Config, decideRoute, nameLooksLikeImage, normalizeConfig, promptWantsVision, sameModel } from '../lib/index.js'
+import { apply, Config, decideRoute, discoverVisionModels, modelAcceptsImages, nameLooksLikeImage, normalizeConfig, promptWantsVision, sameModel } from '../lib/index.js'
 import { ENDPOINT_APIS, ENDPOINT_KEY_REF, ENDPOINT_PROVIDER, readEndpoint, routeForEndpoint, syncEndpoint } from '../lib/endpoint.js'
 
 const EXTENSIONS = ['png', 'jpg', 'jpeg', 'webp', 'gif']
@@ -155,11 +155,26 @@ function fakeAttachments({ fail = false } = {}) {
 	}
 }
 
-/** LLM double: an async stream of chunks, recording every option object. */
-function fakeLlm({ chunks = [{ type: 'text-delta', text: '文字内容: VISION ROUTER\n画面描述: 深蓝色背景' }, { type: 'finish', reason: 'stop' }] } = {}) {
+/**
+ * LLM double: an async stream of chunks, recording every option object, plus the
+ * registry surface the plugin reads for its capability oracle.
+ */
+function fakeLlm({ chunks = [{ type: 'text-delta', text: '文字内容: VISION ROUTER\n画面描述: 深蓝色背景' }, { type: 'finish', reason: 'stop' }], models = {} } = {}) {
 	const calls = []
+	const discoveries = []
 	return {
 		calls,
+		/** `provider -> model list` this fake advertises. */
+		models,
+		/** Every `(settingsNs, handler)` pair the plugin registered. */
+		discoveries,
+		registerModelDiscovery(settingsNs, handler) {
+			discoveries.push({ settingsNs, handler })
+		},
+		async listModels(provider) {
+			if (!Object.hasOwn(this.models, provider)) throw new Error(`unknown provider ${provider}`)
+			return this.models[provider]
+		},
 		async *stream(options) {
 			calls.push(options)
 			for (const chunk of chunks) yield chunk
@@ -611,7 +626,7 @@ test('apply activates without a session controller and never wraps the prompt th
 	const ctx = fakeContext(controller, undefined, { controllerAvailable: false })
 	apply(ctx, { vision: VISION })
 
-	assert.deepEqual(ctx.injected, ['tools', 'settings', 'llm,settings,credentials', 'sessionController'], 'every service is requested optionally, never as a required dependency')
+	assert.deepEqual(ctx.injected, ['tools', 'settings', 'llm,settings,credentials', 'llm', 'sessionController'], 'every service is requested optionally, never as a required dependency')
 	assert.equal(controller.prompt, original, 'nothing is wrapped when the service is absent')
 	assert.equal(ctx.logs.warn.length, 0)
 	await controller.prompt({ sessionId: 's1', content: IMAGE })
@@ -721,11 +736,11 @@ test('apply registers no tool when disabled, and tolerates a deployment without 
 	const disabled = fakeContext(fakeController(), fakeLlm(), { tools: disabledTools, attachments: fakeAttachments(), fs: fakeFs() })
 	apply(disabled, { vision: VISION, tool: false })
 	assert.equal(disabledTools.registered.length, 0)
-	assert.deepEqual(disabled.injected, ['settings', 'llm,settings,credentials', 'sessionController'], 'a disabled tool is not even requested')
+	assert.deepEqual(disabled.injected, ['settings', 'llm,settings,credentials', 'llm', 'sessionController'], 'a disabled tool is not even requested')
 
 	const bare = fakeContext(fakeController(), fakeLlm(), { attachments: fakeAttachments(), fs: fakeFs() })
 	apply(bare, { vision: VISION })
-	assert.deepEqual(bare.injected, ['tools', 'settings', 'llm,settings,credentials', 'sessionController'], 'the tool, settings and endpoint services are requested optionally, so their absence cannot fail the mount')
+	assert.deepEqual(bare.injected, ['tools', 'settings', 'llm,settings,credentials', 'llm', 'sessionController'], 'the tool, settings, endpoint services and the vision oracle are all requested optionally, so their absence cannot fail the mount')
 	assert.equal(bare.logs.warn.length, 0)
 })
 
@@ -984,4 +999,69 @@ test('a skipped or failed endpoint write reports itself as not-synced, so it sta
 	assert.equal(ok.startsWith('endpoint-route-ok'), true, 'a completed write is reported as synced')
 	assert.equal(accepting.mutations.length, 1)
 	assert.deepEqual(credentials.sets, [{ ref: ENDPOINT_KEY_REF, value: 'sk-card-typed' }])
+})
+
+// ── The capability oracle behind the model picker ───────────────────────────
+//
+// The card can only ask `remote.llm.discoverModels(settingsNs, …)`, and the
+// namespace it can name is this plugin's own. Registering a discovery handler
+// there is what turns that call into "which of this route's models take
+// images?" — a question only the Host can answer.
+
+test('modelAcceptsImages trusts a declaration over the model id', () => {
+	assert.equal(modelAcceptsImages({ id: 'gpt-4o', inputModalities: ['text', 'image'] }), true)
+	assert.equal(modelAcceptsImages({ id: 'gpt-4o', inputModalities: ['text'] }), false, 'an explicit text-only declaration wins over a vision-looking id')
+	assert.equal(modelAcceptsImages({ id: 'qwen3.8-flash' }), false, 'a disclosed-nothing id that says nothing stays out')
+	assert.equal(modelAcceptsImages({ id: 'qwen-vl-max' }), true, 'an undisclosed route falls back to the id')
+	assert.equal(modelAcceptsImages({ id: 'glm-4v' }), true)
+	assert.equal(modelAcceptsImages({ inputModalities: ['image'] }), true, 'a declaration alone is enough')
+})
+
+test('the plugin registers the vision oracle under its own settings namespace', () => {
+	const llm = fakeLlm({ models: { 'some-route': [] } })
+	const ctx = fakeContext(fakeController(), llm, { attachments: fakeAttachments() })
+	apply(ctx, { vision: VISION })
+
+	assert.equal(llm.discoveries.length, 1, 'exactly one discovery registration')
+	assert.equal(llm.discoveries[0].settingsNs, 'image-router', 'the card can only name this namespace')
+	assert.equal(typeof llm.discoveries[0].handler, 'function')
+})
+
+test('the oracle answers with only the image-capable models of a route', async () => {
+	const llm = fakeLlm()
+	const ctx = fakeContext(fakeController(), llm, { attachments: fakeAttachments() })
+	apply(ctx, { vision: VISION })
+	const oracle = llm.discoveries[0].handler
+	const listed = {
+		'route-a': [
+			{ provider: 'route-a', id: 'text-only', name: 'Text', inputModalities: ['text'] },
+			{ provider: 'route-a', id: 'vision-one', name: 'Vision', inputModalities: ['text', 'image'] },
+			{ provider: 'route-a', id: 'qwen-vl-max', name: 'Undisclosed' },
+		]
+	}
+	llm.models = listed
+
+	const answer = await oracle({ provider: 'route-a' }, undefined)
+	assert.deepEqual(answer, [
+		{ id: 'vision-one', name: 'Vision' },
+		{ id: 'qwen-vl-max', name: 'Undisclosed' }
+	], 'text-only stays out, declared and id-recognised image models stay in')
+})
+
+test('the oracle answers an empty list for a route it cannot inspect', async () => {
+	const llm = fakeLlm()
+	const ctx = fakeContext(fakeController(), llm, { attachments: fakeAttachments() })
+	apply(ctx, { vision: VISION })
+	const oracle = llm.discoveries[0].handler
+
+	assert.deepEqual(await oracle({ provider: 'unregistered' }, undefined), [], 'an unknown route is an answer, not a throw')
+	assert.deepEqual(await oracle({}, undefined), [], 'a request naming no provider answers empty')
+	assert.deepEqual(await oracle(undefined, undefined), [], 'and so does no request at all')
+})
+
+test('discoverVisionModels answers empty without an llm service instead of throwing', async () => {
+	const bare = { get: () => undefined }
+	assert.deepEqual(await discoverVisionModels('anything', bare), [])
+	assert.deepEqual(await discoverVisionModels('anything', undefined), [])
+	assert.deepEqual(await discoverVisionModels('   ', { get: () => ({ listModels: async () => [] }) }), [])
 })

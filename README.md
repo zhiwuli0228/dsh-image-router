@@ -37,11 +37,19 @@ qwen-token-plan-cn / qwen3.8-flash   ← 一次旁路调用（不改会话路由
 
 ### ① 用这个部署里已经配好的模型
 
-卡片会列出**你已经配置过的模型**供点选，不用记 provider id：
+卡片会列出**支持图片输入的模型**供点选，不用记 provider id：
 
 - 优先读 `$DSH_HOME/settings.yaml` 里 `llm-pi-ai` 段已经声明了 `models` 的路由（这正是**设置 → 模型**页写的那些）；
-- 没有的话退回到 `remote.llm.discoverModels` 逐个询问当前已注册的 provider；
+- 否则逐个 provider 调用 `remote.llm.discoverModels('image-router', { provider })`，由**宿主侧的图片能力 oracle** 回答（见下）；
 - 下拉里找不到就手填 `provider` / `model`（目录型的路由可以服务卡片枚举不到的模型）。
+
+**图片能力 oracle 是怎么来的**：浏览器唯一的模型类接口是 `remote.llm.discoverModels(settingsNs, request)`，且只能按命名空间提问。本插件因此在自己的命名空间 `image-router` 上注册了一个 discovery handler，用 `ctx.llm.listModels(provider)` 读每条路由的模型，再按 `inputModalities` 过滤：
+
+- 模型**显式声明**了模态 → 声明说了算（声明 `['text']` 的即使 id 里有 `vision` 也剔除）；
+- 路由**什么都没披露** → 退回到 id 里的视觉家族特征（`vision` / `vl` / `omni` / `4o` / `gemini` …），因为目录型路由未必公开这个字段；
+- 未知/不可达路由 → 空列表，不抛错。
+
+实测：对 `deepseek-official`（4 个模型）只返回 2 个图片模型（`deepseek-flash`、`deepseek-v4-flash-vision-exp`）；审计写 `discover provider=… models=4 imageCapable=2`。
 
 对应的配置就是：
 
@@ -104,7 +112,7 @@ describe_image(file_path: string, question?: string) -> string
 
 卡片里的 vision 路由有两档（详见上面「配置视觉路由」）：
 
-- **① 已配置模型**：从 `llm-pi-ai` 设置段 + `remote.llm.discoverModels` 汇总出的下拉，点选即可，另有 `provider` / `model` 手填兜底。
+- **① 已配置模型**：从 `llm-pi-ai` 设置段 + 宿主侧图片能力 oracle（`remote.llm.discoverModels('image-router', …)`）汇总出的下拉，**只列支持图片的模型**，点选即可，另有 `provider` / `model` 手填兜底。
 - **② 自定义端点**：填 `baseURL` / `model` / `apiKey`（+ 可选协议、显示名、凭据引用名）。保存后由宿主写进 `llm-pi-ai` 与凭据库，**不重启**即可用。
 
 | 卡片字段 | 生效时机 |
@@ -148,12 +156,13 @@ digest 模式在**准入之前**就把图片换成文字，所以它同时绕过
 9. **密钥只写不读**：`apiKey` 从配置里取走后立即从内存副本上剥掉（不改共享的已解析配置对象），并且**不参与**签名比对 —— 否则同一个端点会不断被判定为"变了"而重复写凭据。
 10. **自定义路由必须声明图片模态**：pi-ai 的 `defaultInput` 是 `["text"]`，所以路由的模型条目不写 `input: [text, image]` 就会被当成纯文本模型，图片会被投影成占位文字而不是发到端点。卡片默认开这个开关。
 11. **解析探测留痕**：写完后做一次只读的 `llm.resolveModelInfo(provider, model)`，把结果写进审计（`endpoint-route-live … modalities=text+image`）—— 这是"我配的端点到底生效没有"唯一可读的答案。
+12. **图片能力 oracle 注册在自己的命名空间上**：`ctx.llm.registerModelDiscovery('image-router', …)`。浏览器唯一能发的模型类请求是 `remote.llm.discoverModels(settingsNs, request)`，而 `settingsNs` 只能填它知道的命名空间 —— 填自己的，才能让这次调用回答"这条路由里哪些模型真收图"，而不是"这条路由有哪些模型"。过滤必须留在宿主：`inputModalities` 从不过河到浏览器。
 
 ## 已验证
 
 | 环节 | 结论 |
 |---|---|
-| 单测（digest 替换 / 失败保留 / 多图合并 / dryRun / 工具调用 / 设置覆盖 / 开关模式状态机 / 安全降级 / 审计 / 自定义端点档） | ✅ 46 个用例通过 |
+| 单测（digest 替换 / 失败保留 / 多图合并 / dryRun / 工具调用 / 设置覆盖 / 开关模式状态机 / 安全降级 / 审计 / 自定义端点档 / 图片能力 oracle） | ✅ 51 个用例通过 |
 | 挂载进真实 web-profile 树 | ✅ 隔离实例冷启动，审计写 `mounted mode=digest …` |
 | **标准 bundle 形态可装载**（包名进 `dsh.profile.bundles` → 包内 `dsh.bundle.patch` → 部署层 config 覆盖 → `Config` 补默认值） | ✅ 隔离实例冷启动实测，`schemastery` 与回退 Standard Schema 两条路径都跑过 |
 | 无 `sessionController` 的 profile 仍能启动 | ✅ headless 冷启动 `exit=0`，审计只有 `apply-entered` |
@@ -164,6 +173,7 @@ digest 模式在**准入之前**就把图片换成文字，所以它同时绕过
 | **自定义端点档写进上游**（真实 web profile，非 mock 服务） | ✅ 隔离实例实测：`settings.yaml` 出现 `providers.image-router-vision`（含 `apiKeyEnv` 引用与 `input: [text, image]`），`.credentials.yaml` 的 `refs` 出现 `IMAGE_ROUTER_VISION_API_KEY`，原有 provider 未变 |
 | **端点档写完后路由真的可用** | ✅ 同一实例审计写 `endpoint-route-live provider=image-router-vision model=mock-vision modalities=text+image` |
 | **`ctx.llm.stream` 经该路由打到 mock 端点（图片随行）** | ✅ 隔离实例内探针实测：`listProviders()` 出现 `image-router-vision`（**未重启**）、`resolveModelInfo` 报 `["text","image"]`、`admitPromptContent` 得到 `image/png 1x1 70B` 引用、stream 收齐 `block-start → 3×text-delta → block-end → usage → finish:stop`，文本 `MOCK STREAM ANSWER`；mock 侧线上记录 `POST /v1/chat/completions` + `authorization: Bearer sk-ve…` + `sawImage: true` |
+| **图片能力 oracle 真的按模态过滤** | ✅ 同一实例实测：`discoverModels('image-router', {provider:'deepseek-official'})` 从 **4 个模型里筛出 2 个**图片模型；自定义端点路由返回 `mock-vision`；未知路由返回 `[]` 而不抛错 |
 | 浏览器半被发现并提供 | ✅ 隔离实例实测（boot manifest 的 combo 清单含 `dsh-image-router/client.js`，取回 200 且内容含本插件模块）；卡片两档的渲染用 React 替身跑过（下拉/端点字段/控件数），**视觉外观**需你在 GUI 里看一眼 |
 
 digest 端到端实测输出（`tools/digest-probe.mjs`）：
@@ -317,7 +327,7 @@ node test/routing.test.js    # 单进程直跑：没有管道支持的沙箱里�
 
 > `node --test test/` **不可移植**：Node 20 会扫描目录，Node 22+ 把 `test/` 当成单个入口文件去加载而报 `MODULE_NOT_FOUND`（CI 就是靠多版本矩阵抓到这个的）。
 
-46 个用例：配置归一化与校验（含旧模式名映射、schema 物化出的空对象/空数组、端点档补齐 vision 路由与两档优先级）、图片信号判定、digest 的替换/多图合并/失败保留/无图直通/dryRun/落盘失败、`describe_image` 的注册/读文件/问题透传/缺文件与目录与非图片的拒绝、设置节的注册与「保存后下一轮即生效」、校验失败的覆盖被忽略、自定义端点写入上游路由与凭据（含"跳过/失败不得记为已同步"这一可重试契约）、switch 的借出‑归还‑放弃状态机、手选模型不被覆盖、`holdTurns`、`sticky`、路由校验与缓存、冷会话不路由也不告警、门面两种布局、审计可写与不可写、无 `sessionController` 时不包装、卸载恢复。
+51 个用例：配置归一化与校验（含旧模式名映射、schema 物化出的空对象/空数组、端点档补齐 vision 路由与两档优先级）、图片信号判定、digest 的替换/多图合并/失败保留/无图直通/dryRun/落盘失败、`describe_image` 的注册/读文件/问题透传/缺文件与目录与非图片的拒绝、设置节的注册与「保存后下一轮即生效」、校验失败的覆盖被忽略、自定义端点写入上游路由与凭据（含"跳过/失败不得记为已同步"这一可重试契约）、图片能力 oracle（声明优先于 id、按命名空间注册、过滤、未知路由不抛错、无 llm 服务时退化）、switch 的借出‑归还‑放弃状态机、手选模型不被覆盖、`holdTurns`、`sticky`、路由校验与缓存、冷会话不路由也不告警、门面两种布局、审计可写与不可写、无 `sessionController` 时不包装、卸载恢复。
 
 CI（`.github/workflows/ci.yml`）在 Ubuntu + Windows × Node 20/22/24 上跑同一套用例，并校验「`dsh.bundle.patch` 指向的文件存在、入口导出 `name`/`Config`/`apply`」这条打包契约。
 
