@@ -645,6 +645,23 @@ window.__ModuleLoader__.load({
 							() => h(Card, { scope, remote: ctx.remote })
 						)
 						report.registered = true
+						// Read the ledger back. The tab renders the intersection of the
+						// namespaces the Host serves with the entries this slot actually
+						// holds, so "I called register" is a weaker claim than "the slot
+						// kept it". Recording what the slot reports turns a silent absence
+						// into a readable one.
+						try {
+							const entries = scoped.slots.entries('settings.plugin.item')
+							report.slotEntryCount = Array.isArray(entries) ? entries.length : -1
+							report.slotHasMine = Array.isArray(entries)
+								? entries.some((entry) => (entry?.options?.key ?? entry?.key) === NAMESPACE)
+								: false
+							report.slotEntryKeys = Array.isArray(entries)
+								? entries.map((entry) => entry?.options?.key ?? entry?.key ?? '?').slice(0, 12)
+								: []
+						} catch (error) {
+							report.ledgerReadError = String(error)
+						}
 						publish()
 					})
 				})
