@@ -80,6 +80,7 @@ qwen-token-plan-cn / qwen3.8-flash   ← 一次旁路调用（不改会话路由
 
 - **`endpoint` 优先于 `provider/model`**；两者都在时用显式的 `provider/model`，所以老配置不会被动改变行为。
 - **API Key 是只写字段**：Host 收到后写进凭据库，不回显、不写进本插件的配置，也不进 trace。
+- **凭据存成引用名**：`$DSH_HOME/.credentials.yaml` 的 `refs.IMAGE_ROUTER_VISION_API_KEY`（可用 `apiKeyEnv` 改名）。选引用名而不是泛型 key，是因为 pi-ai 解析 `apiKeyEnv` 走的正是这一层 —— `credentialRef(name)` → `ctx.credentials.resolve(...)`，与你原有的 `QWEN_TOKEN_PLAN_CN_API_KEY` 同一种形态；泛型 key 在这一层解析不到。
 - **别关掉「声明支持图片输入」**：pi-ai 对自定义路由的默认模态是 `["text"]`，关掉之后发过去的图片会被投影成占位文字，端点收不到图。
 - 想在**设置 → 模型**里管理这条路由也行：它就是一条普通的 `llm-pi-ai` 路由，`displayName`、超时、协议都能在那边继续改。
 - 卡片会在审计文件里留一行 `endpoint-route-live … modalities=text+image`，用来回答"我配的端点到底生效了吗"。
@@ -162,6 +163,7 @@ digest 模式在**准入之前**就把图片换成文字，所以它同时绕过
 | 设置命名空间注册 | ✅ 隔离实例实测（审计写 `settings-registered ns=image-router`） |
 | **自定义端点档写进上游**（真实 web profile，非 mock 服务） | ✅ 隔离实例实测：`settings.yaml` 出现 `providers.image-router-vision`（含 `apiKeyEnv` 引用与 `input: [text, image]`），`.credentials.yaml` 的 `refs` 出现 `IMAGE_ROUTER_VISION_API_KEY`，原有 provider 未变 |
 | **端点档写完后路由真的可用** | ✅ 同一实例审计写 `endpoint-route-live provider=image-router-vision model=mock-vision modalities=text+image` |
+| **`ctx.llm.stream` 经该路由打到 mock 端点（图片随行）** | ✅ 隔离实例内探针实测：`listProviders()` 出现 `image-router-vision`（**未重启**）、`resolveModelInfo` 报 `["text","image"]`、`admitPromptContent` 得到 `image/png 1x1 70B` 引用、stream 收齐 `block-start → 3×text-delta → block-end → usage → finish:stop`，文本 `MOCK STREAM ANSWER`；mock 侧线上记录 `POST /v1/chat/completions` + `authorization: Bearer sk-ve…` + `sawImage: true` |
 | 浏览器半被发现并提供 | ✅ 隔离实例实测（boot manifest 的 combo 清单含 `dsh-image-router/client.js`，取回 200 且内容含本插件模块）；卡片两档的渲染用 React 替身跑过（下拉/端点字段/控件数），**视觉外观**需你在 GUI 里看一眼 |
 
 digest 端到端实测输出（`tools/digest-probe.mjs`）：
