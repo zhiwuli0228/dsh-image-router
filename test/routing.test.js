@@ -1102,6 +1102,87 @@ test('Config satisfies every consumer the harness reads it through', () => {
 	assert.equal(parsed.data.mode, 'digest')
 })
 
+// ── The browser half's activation contract ──────────────────────────────────
+//
+// A client plugin declares the modules its factory may reach through
+// `dsh.client.inject`. The shell activates an entry only when every declared
+// module exists, so a declaration naming a module this deployment does not ship
+// leaves the plugin **pending forever**: `apply` never runs, no card registers,
+// and the plugin configuration tab renders nothing for it. That is exactly how a
+// phantom `@deepseek-ai/dsh-client-runtime` (a module that exists nowhere) kept
+// this card invisible while the boot console stayed clean.
+
+test('the client manifest declares only modules the shell actually serves', () => {
+	const manifest = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'))
+	const declared = manifest.dsh.client.inject
+	assert.ok(Array.isArray(declared) && declared.length > 0)
+
+	// The set this deployment's client manifest serves, from a live boot dump.
+	// Names outside it are not necessarily wrong everywhere, but adding one here
+	// has to be a deliberate act with a boot to back it: an absent dependency is
+	// silent on the console and fatal to the card.
+	const served = new Set([
+		'@deepseek-ai/dsh-client-ui-settings',
+		'@deepseek-ai/dsh-api-remotes',
+		'@deepseek-ai/dsh-client-ui-settings-general',
+		'@deepseek-ai/dsh-client-locale',
+		'@deepseek-ai/dsh-client-ui-theme',
+		'@deepseek-ai/dsh-client-connection'
+	])
+	for (const dep of declared) assert.ok(served.has(dep), `declared client module is not served by this deployment: ${dep}`)
+	assert.equal(manifest.dsh.client.platform, 'web')
+})
+
+test('the browser half activates and registers its card', () => {
+	// Load the bundle the way the shell does, then drive the plugin's own apply.
+	const source = readFileSync(new URL('../client/client.js', import.meta.url), 'utf8')
+	let entry
+	const windowShim = { __ModuleLoader__: { load: (value) => { entry = value } } }
+	new Function('window', source)(windowShim)
+	assert.equal(entry.id, 'dsh-image-router')
+
+	const React = {
+		createElement: (type, props, ...children) => ({ type, props: props ?? {}, children }),
+		useState: (initial) => [initial, () => {}],
+		useEffect: () => {},
+		useCallback: (fn) => fn,
+		useSyncExternalStore: (_s, snapshot) => snapshot(),
+		useMemo: (fn) => fn()
+	}
+	const module = entry.factory((name) => {
+		if (name === 'react') return React
+		throw new Error(`unexpected require: ${name}`)
+	})
+	assert.equal(module.name, 'image-router')
+
+	const registered = []
+	let bound
+	let injected
+	const scoped = {
+		settingsScope: {
+			bind: (options) => {
+				bound = options
+				return { subscribe: () => () => {}, getSnapshot: () => ({ value: {}, writable: true, revision: 1 }), set: async () => {} }
+			}
+		},
+		slots: {
+			inject: (name, callback) => {
+				registered.push(`inject:${name}`)
+				callback()
+			},
+			register: (options, render) => {
+				registered.push(`register:${options.name}:${options.key}`)
+				assert.equal(typeof render, 'function')
+			}
+		}
+	}
+	module.apply({ remote: {}, inject: (names, callback) => { injected = names; callback(scoped) } })
+
+	assert.deepEqual(injected, ['settingsScope'], 'the card needs only the settings scope')
+	assert.deepEqual(registered, ['inject:settings.plugin.item', 'register:settings.plugin.item:image-router'], 'the card is claimed under the namespace the Host serves, or the tab dispatches nothing')
+	assert.equal(bound.namespace, 'image-router', 'both halves must spell the same namespace')
+})
+
 // ── The write must not wreck a route the user also edits ────────────────────
 //
 // The generated route is a normal `llm-pi-ai` route, so the Models page can edit
