@@ -31,19 +31,23 @@ const flush = () => new Promise((resolve) => setTimeout(resolve, 0))
  *
  * The real plugin context refuses undeclared service reads with
  * `cannot get property "X" without inject` — a failure that takes the whole
- * loader entry down, and one that no plain object double can produce. This proxy
- * reproduces it so the browser half cannot silently regress into reading a
- * service it forgot to declare.
+ * loader entry down, or (for a service only the card's render touches) makes the
+ * dispatched card crash so the tab draws nothing. This proxy reproduces the gate
+ * for *every* string property, not just ones absent from the target: a service
+ * the double happens to carry is still unreadable unless the plugin declared it,
+ * which is the only way the card's `ctx.remote` regression can fail here.
  *
  * @param base - the context behaviour under test (`remote`, `inject`).
  * @param declared - the service names the plugin exported in `inject`.
  * @returns the gated context.
  */
 function declaredContext(base, declared) {
-	const allowed = new Set(['inject', 'remote', ...declared])
+	// `inject` is a context verb, not a service: the real gate exempts the verbs
+	// (CTX_VERBS) and gates service reads only.
+	const allowed = new Set(['inject', ...declared])
 	return new Proxy(base, {
 		get(target, property, receiver) {
-			if (typeof property === 'string' && !allowed.has(property) && !(property in target)) {
+			if (typeof property === 'string' && !allowed.has(property)) {
 				throw new TypeError(`cannot get property "${property}" without inject`)
 			}
 			return Reflect.get(target, property, receiver)
@@ -1133,9 +1137,13 @@ test('Config satisfies every consumer the harness reads it through', () => {
 // `dsh.client.inject`. The shell activates an entry only when every declared
 // module exists, so a declaration naming a module this deployment does not ship
 // leaves the plugin **pending forever**: `apply` never runs, no card registers,
-// and the plugin configuration tab renders nothing for it. That is exactly how a
-// phantom `@deepseek-ai/dsh-client-runtime` (a module that exists nowhere) kept
-// this card invisible while the boot console stayed clean.
+// and the plugin configuration tab renders nothing for it.
+//
+// Separately, cordis' plugin context is declaration-gated per service: reading a
+// service the plugin did not declare throws. The card's render reads `ctx.remote`,
+// so that declaration has to exist even though nothing touches it during
+// activation — omitting it produced a registration that succeeded and then
+// crashed when the tab dispatched it, which reads as a missing option.
 
 test('the client manifest declares only service names this shell provides', () => {
 	// `dsh.client.inject` entries are SERVICE names, not package names: most of
@@ -1176,6 +1184,7 @@ test('the browser half activates and registers its card', () => {
 	const registered = []
 	let bound
 	let injected
+	let renderCard
 	const scoped = {
 		settingsScope: {
 			bind: (options) => {
@@ -1191,14 +1200,26 @@ test('the browser half activates and registers its card', () => {
 			register: (options, render) => {
 				registered.push(`register:${options.name}:${options.key}`)
 				assert.equal(typeof render, 'function')
+				renderCard = render
 			}
 		}
 	}
-	module.apply(declaredContext({ remote: {}, inject: (names, callback) => { injected = names; callback(scoped) } }, module.inject))
+	module.apply(declaredContext({ remote: { llm: {}, settings: {} }, inject: (names, callback) => { injected = names; callback(scoped) } }, module.inject))
 
+	// Every gated service the half reads must be declared. `remote` is the one that
+	// hides, because only the card's render touches it: without the declaration the
+	// render throws "cannot get property \"remote\" without inject" when the tab
+	// dispatches the card, which the tab reports as a crashed slot entry.
+	assert.deepEqual(module.inject, ['slots', 'remote'], 'declare every gated service this half reads')
 	assert.deepEqual(injected, ['settingsScope'], 'the settings scope is the optional half')
 	assert.deepEqual(registered, ['inject:settings.plugin.item', 'register:settings.plugin.item:image-router'], 'the card is claimed under the namespace the Host serves, or the tab dispatches nothing')
 	assert.equal(bound.namespace, 'image-router', 'both halves must spell the same namespace')
+
+	// Drive the dispatched render under the same gate: this is the call that threw
+	// in the browser and left the tab with nothing to draw.
+	const element = renderCard()
+	assert.equal(typeof element.type, 'function', 'the registration renders the card component')
+	assert.equal(typeof element.props.remote, 'object', 'the card receives the Remote table it was declared for')
 })
 
 test('the browser half degrades when the settings scope never arrives', () => {

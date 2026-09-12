@@ -602,13 +602,23 @@ window.__ModuleLoader__.load({
 		/**
 		 * Required, and only this one.
 		 *
-		 * `slots` is the service that carries the card into the settings tab, and
-		 * cordis' plugin context is declaration-gated: reading `ctx.slots` without
-		 * declaring it throws `cannot get property "slots" without inject`, which
-		 * fails the loader entry outright. `settingsScope` is reached the optional
-		 * way instead, so a deployment that ships no settings UI still activates.
+		 * cordis' plugin context is declaration-gated: reading a service that was not
+		 * declared throws `cannot get property "X" without inject`. Both of these are
+		 * read by this half, and both therefore have to be declared:
+		 *
+		 *  - `slots` carries the card into the settings tab and owns its registration.
+		 *  - `remote` is the Typert Remote table the card uses for the model picker.
+		 *
+		 * The second one is easy to miss because the declaration is consumed inside
+		 * the card's render function rather than during activation: leaving it out
+		 * produces a card entry that registers successfully and then crashes when the
+		 * tab dispatches it ("slot entry crashed in 'settings.plugin.item': cannot get
+		 * property \"remote\" without inject"), which reads as a missing option.
+		 *
+		 * `settingsScope` is reached the optional way instead, so a deployment that
+		 * ships no settings UI still activates.
 		 */
-		const inject = ['slots']
+		const inject = ['slots', 'remote']
 
 		/**
 		 * Activation report, readable as `window.__imageRouter` in the browser.
