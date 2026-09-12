@@ -67,8 +67,17 @@ window.__ModuleLoader__.load({
 			])
 		}
 
-		/** One labelled dropdown. */
+		/**
+		 * One labelled dropdown.
+		 *
+		 * The options have to reach `createElement` as children — arguments after the
+		 * props object — because anything left on the props object is not rendered.
+		 * Reading `props.options` therefore produced a select with no `<option>` at
+		 * all: a blank control, no error, nothing in the console. Both spellings are
+		 * accepted so that mistake cannot recur silently.
+		 */
 		function select(props) {
+			const options = props.children ?? props.options ?? []
 			return h('label', { style: styles.row, key: props.name }, [
 				h('span', { style: styles.label, key: 'l' }, props.label),
 				h('select', {
@@ -77,7 +86,7 @@ window.__ModuleLoader__.load({
 					value: props.value,
 					disabled: props.disabled,
 					onChange: (event) => props.onChange(event.target.value)
-				}, props.options)
+				}, options)
 			])
 		}
 
@@ -292,7 +301,13 @@ window.__ModuleLoader__.load({
 				setCandidates({ rows: [], note: '正在读取可用模型…' })
 				try {
 					const described = await remote.settings.describe()
-					const piAi = described && described.ok === true ? described.value?.namespaces?.[PI_AI_NAMESPACE] : undefined
+					// `describe()` answers with `namespaces` as an ARRAY of views
+					// (`SettingsDescribeValue.namespaces: SettingsNamespaceView[]`), not a
+					// record keyed by name. Indexing it by namespace name yields undefined,
+					// which silently demotes the picker to the discovery fallback and its
+					// blander note — no error, just a worse list.
+					const views = described && described.ok === true ? described.value?.namespaces : undefined
+					const piAi = Array.isArray(views) ? views.find((view) => view?.ns === PI_AI_NAMESPACE) : undefined
 					const configured = routeCandidates(piAi?.value)
 					if (configured.length > 0) {
 						setCandidates({ rows: configured, note: `来自已配置的 ${PI_AI_NAMESPACE} 路由（${configured.length} 个模型）。` })

@@ -1253,6 +1253,92 @@ test('the browser half activates and registers its card', () => {
 	assert.equal(typeof element.props.remote.llm.listProviders, 'function')
 })
 
+test('the vision picker is populated from the configured routes', async () => {
+	// The user-visible failure this guards: the card rendered, the note claimed the
+	// list had been capability-filtered, and the picker was still empty. Two causes
+	// are covered — the dropdown helper dropped its options (they must be children,
+	// never a prop), and `settings.describe()` answers with `namespaces` as an ARRAY
+	// of views, so indexing it by namespace name silently found nothing and demoted
+	// the picker to the discovery fallback.
+	const source = readFileSync(new URL('../client/client.js', import.meta.url), 'utf8')
+	let entry
+	new Function('window', source)({ __ModuleLoader__: { load: (value) => { entry = value } } })
+
+	const hooks = []
+	let cursor = 0
+	const renderElement = (element) => (typeof element.type === 'function' ? element.type(element.props) : element)
+	const React = {
+		createElement: (type, props, ...children) => ({ type, props: props ?? {}, children: children.flat(Infinity).filter((child) => child !== null && child !== undefined && child !== false) }),
+		useState(initial) {
+			const index = cursor++
+			if (hooks.length <= index) hooks[index] = initial
+			return [hooks[index], (next) => { hooks[index] = typeof next === 'function' ? next(hooks[index]) : next }]
+		},
+		useEffect(fn) {
+			const index = cursor++
+			if (hooks.length <= index) {
+				hooks[index] = true
+				queueMicrotask(fn)
+			}
+		},
+		useCallback: (fn) => fn,
+		useSyncExternalStore: (_subscribe, snapshot) => snapshot(),
+		useMemo: (fn) => fn()
+	}
+	const module = entry.factory((name) => (name === 'react' ? React : (() => { throw new Error(name) })()))
+
+	const piAi = {
+		providers: {
+			'qwen-token-plan-cn': { models: [{ id: 'glm-5.2' }, { id: 'qwen3.8-flash' }] },
+			huawei: { models: [{ id: 'deepseek-v4-flash' }] }
+		}
+	}
+	let renderCard
+	module.apply({
+		remote: {
+			settings: { describe: async () => ({ ok: true, value: { writable: true, hasDocument: true, namespaces: [{ ns: 'image-router', value: {} }, { ns: 'llm-pi-ai', value: piAi }] } }) },
+			llm: { listProviders: async () => ({ ok: true, value: [] }), discoverModels: async () => ({ ok: true, value: [] }) }
+		},
+		settingsScope: {
+			bind: () => ({ subscribe: () => () => {}, getSnapshot: () => ({ value: { mode: 'digest', vision: { provider: 'qwen-token-plan-cn', model: 'qwen3.8-flash' } }, writable: true, revision: 1 }), set: async () => {} })
+		},
+		slots: { inject: (_n, callback) => callback(), register: (_o, render) => { renderCard = render }, entries: () => [] }
+	})
+
+	cursor = 0
+	renderElement(renderCard())
+	await flush()
+	await flush()
+	cursor = 0
+	const tree = renderElement(renderCard())
+
+	const optionValues = []
+	const strings = []
+	const selects = []
+	const walk = (node) => {
+		if (node === null || node === undefined) return
+		if (typeof node === 'string') {
+			strings.push(node)
+			return
+		}
+		if (Array.isArray(node)) {
+			for (const child of node) walk(child)
+			return
+		}
+		if (typeof node !== 'object') return
+		if (node.type === 'option') optionValues.push(node.props.value)
+		if (node.type === 'select') selects.push(node)
+		for (const child of node.children ?? []) walk(child)
+	}
+	walk(tree)
+
+	assert.ok(optionValues.includes('qwen-token-plan-cn\u0000qwen3.8-flash'), 'the configured qwen route/model must be selectable, not merely named in the note')
+	assert.ok(optionValues.includes('huawei\u0000deepseek-v4-flash'), 'every configured route contributes its models')
+	assert.ok(strings.some((text) => text.includes('来自已配置的 llm-pi-ai 路由')), 'and the note says the list came from the configured routes, not the fallback')
+	assert.ok(selects.length >= 2, 'both dropdowns render')
+	for (const control of selects) assert.ok((control.children ?? []).length > 0, 'no dropdown may render without any option')
+})
+
 test('the browser half reports a broken scope instead of throwing at activation', () => {
 	// `settingsScope` is a declared service now, so the loader gates activation on
 	// it. A context that answers the declaration but hands back nothing usable must
