@@ -364,6 +364,33 @@ test('digest mode replaces prompt images with the vision answer and never touche
 	assert.equal(controller.calls.length, 0, 'the session model is untouched')
 })
 
+test('a route that delivers its answer only as a completed block still counts', async () => {
+	// The adapter emits the finished text block as well as any deltas, and a provider
+	// that does not stream deltas delivers the whole answer ONLY that way. Reading just
+	// `text-delta` produced an empty analysis with a `stop` finish and no error — a
+	// failure indistinguishable from the model answering nothing.
+	const controller = fakeController({ noSelectionApi: true })
+	const llm = fakeLlm({
+		chunks: [
+			{ type: 'reasoning-delta', text: '让我先想想…' },
+			{ type: 'block-end', block: { type: 'text', text: '文字内容: BLOCK ONLY' } },
+			{ type: 'finish', reason: 'stop' }
+		]
+	})
+	const trace = join(mkdtempSync(join(tmpdir(), 'image-router-block-')), 'trace.log')
+	const ctx = fakeContext(controller, llm, { attachments: fakeAttachments() })
+	apply(ctx, { vision: VISION, imageExtensions: EXTENSIONS, traceFile: trace })
+
+	await controller.prompt({ sessionId: 's1', content: IMAGE })
+	assert.equal(llm.calls.length, 1, 'the analysis still happens')
+	const forwarded = controller.requests[0]
+	const text = forwarded.content.map((part) => part.text ?? '').join('\n')
+	assert.ok(text.includes('BLOCK ONLY'), 'the completed block is used when no deltas arrive')
+	assert.equal(text.includes('让我先想想'), false, 'reasoning is never mistaken for the analysis')
+	assert.equal(readFileSync(trace, 'utf8').includes('digest-empty'), false, 'and it is not reported as an empty answer')
+	rmSync(join(trace, '..'), { recursive: true, force: true })
+})
+
 test('digest mode sends the admitted images to the vision route as a one-shot call', async () => {
 	const controller = fakeController({ noSelectionApi: true })
 	const llm = fakeLlm()
