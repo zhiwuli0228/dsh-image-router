@@ -5,11 +5,25 @@
 // bundles emit: the factory body is plain CJS and require() resolves against the
 // shell's module table, so only platform seed words may be required.
 //
-// What it adds is the card in 设置 → 插件 → 插件配置 that edits the Host settings
-// namespace `image-router` (lib/settings.js registers it; both halves must keep
-// spelling the same namespace). The Host stays the fact source: this half only
-// renders the section and writes to it, and a saved field reaches the plugin's
-// next decision without a restart.
+// What it adds is the card that edits the Host settings section `image-router`
+// (both halves keep spelling the same id: it is the prefix's settings namespace on
+// 0.1.x and the loader entry id on 0.2.x). The Host stays the fact source: this
+// half only renders the section and writes to it, and a saved field reaches the
+// plugin's next decision without a restart.
+//
+// **Two generations, one card.** The card reads and writes through the Remote
+// settings table (`remote.settings.describe()` / `mutate(ns, ops, revision)`),
+// which both generations expose, instead of through the 0.1.x-only `settingsScope`
+// client service. Where the card is *mounted* differs by generation, so it is
+// claimed in both places and each claim fires only where its slot is declared:
+//
+//   - 0.1.x: `settings.plugin.item`, keyed by the settings namespace.
+//   - 0.2.x: `plugins.bundle.config`, keyed by the bundle's package name.
+//
+// The `settingsScope` service is deliberately NOT declared. Requiring it made the
+// loader gate this entry on a service 0.2.x does not ship, so the entry stayed
+// `pending (waiting for service: settingsScope)` and the whole web boot aborted
+// with "1 entry did not activate" (observed on dsh-desktop 0.2.0-rc.2).
 //
 // Defensive by construction: the host does NOT isolate loader-entry factories, so
 // one throwing factory takes the whole web shell down ("Failed to load plugins").
@@ -44,12 +58,46 @@ window.__ModuleLoader__.load({
 		const h = React.createElement
 		/** Namespace the Host section and this card both key to. */
 		const NAMESPACE = 'image-router'
+		/** This bundle's package name: the key 0.2.x dispatches a bundle's config by. */
+		const PACKAGE = 'dsh-image-router'
 		/** Upstream namespace the custom endpoint tier writes its route into. */
 		const PI_AI_NAMESPACE = 'llm-pi-ai'
 		/** Route key the Host derives for a custom endpoint (lib/endpoint.js keeps the same value). */
 		const ENDPOINT_PROVIDER = 'image-router-vision'
-		/** Fields the card edits; each is written as one whole section field. */
+		/** Section fields the card edits; each is written as its own path op. */
 		const FIELDS = ['mode', 'vision', 'instruction', 'maxTokens', 'timeoutMs', 'label', 'endpoint']
+
+		/**
+		 * The section, read and written through the Remote settings table.
+		 *
+		 * `describe()` answers every configurable namespace with one view; the view
+		 * carries the resolved `value`, the namespace `revision` and whether writes
+		 * are accepted. `mutate(ns, ops, revision)` applies path-addressed ops — leaf
+		 * paths, because a 0.2.x deployment accepts a write only when that exact path
+		 * is volatile in the entry's own Config schema, and the plugin declares its
+		 * top-level fields (never both an ancestor and its child) volatile.
+		 */
+		function namespaceClient(remote) {
+			return {
+				async read() {
+					const response = await remote.settings.describe()
+					const views = response !== null && typeof response === 'object' && response.ok === true ? response.value?.namespaces : undefined
+					const view = Array.isArray(views) ? views.find((candidate) => candidate !== null && typeof candidate === 'object' && candidate.ns === NAMESPACE) : undefined
+					if (view === undefined) return undefined
+					return {
+						value: routeOf(view.value),
+						// A view that does not state `writable` is treated as writable: the
+						// 0.1.x view carries the flag, and a missing one must not silently
+						// turn a working card into a read-only banner.
+						writable: view.writable !== false,
+						revision: view.revision
+					}
+				},
+				async write(ops, revision) {
+					await remote.settings.mutate(NAMESPACE, ops, revision)
+				}
+			}
+		}
 
 		/** One labelled text input. */
 		function field(props) {
@@ -257,17 +305,39 @@ window.__ModuleLoader__.load({
 		 * card then degrades to the manual entry it has always had.
 		 */
 		function Card(props) {
-			const scope = props.scope
-			const snapshot = React.useSyncExternalStore(
-				React.useCallback((listener) => scope.subscribe(listener), [scope]),
-				React.useCallback(() => scope.getSnapshot(), [scope])
-			)
-			const effective = routeOf(snapshot?.value)
-			const writable = snapshot?.writable === true
 			const remote = props.remote
+			const client = React.useMemo(() => (remote === undefined ? undefined : namespaceClient(remote)), [remote])
+			const [snapshot, setSnapshot] = React.useState(null)
 			const [draft, setDraft] = React.useState(null)
 			const [status, setStatus] = React.useState('')
 			const [candidates, setCandidates] = React.useState(null)
+
+			/**
+			 * Read the section. There is no push channel for a third-party card on
+			 * either generation — a 0.1.x scope could be subscribed to, but the service
+			 * that bound it is the one 0.2.x removed, so the card re-reads instead:
+			 * on mount, after a save, and whenever the user asks for a refresh.
+			 */
+			const reload = React.useCallback(async () => {
+				if (client === undefined) {
+					setStatus('这个部署没有 API 远端服务，无法读写配置。')
+					return
+				}
+				try {
+					const next = await client.read()
+					setSnapshot(next === undefined ? null : next)
+					if (next === undefined) setStatus('没有找到 ' + NAMESPACE + ' 这个设置节：请确认插件已挂载且未被禁用。')
+				} catch (error) {
+					setStatus('读取配置失败：' + (error && error.message ? error.message : String(error)))
+				}
+			}, [client])
+			React.useEffect(() => {
+				void reload()
+			}, [reload])
+
+			const effective = routeOf(snapshot?.value)
+			const writable = snapshot?.writable === true
+			const revision = snapshot?.revision
 
 			// Self-report: this component runs only when the tab actually dispatches
 			// the card. Combined with the registration report, it separates "the slot
@@ -282,7 +352,7 @@ window.__ModuleLoader__.load({
 
 			React.useEffect(() => {
 				setDraft(null)
-			}, [snapshot?.revision])
+			}, [revision])
 
 			const base = draft ?? {
 				mode: text(effective.mode),
@@ -349,7 +419,7 @@ window.__ModuleLoader__.load({
 			React.useEffect(() => {
 				void load()
 				// eslint-disable-next-line react-hooks/exhaustive-deps
-			}, [snapshot?.revision, remote])
+			}, [revision, remote])
 
 			const rows = candidates?.rows ?? []
 			const selectable = rows.slice()
@@ -371,10 +441,16 @@ window.__ModuleLoader__.load({
 					setStatus('timeoutMs 必须是正整数。')
 					return
 				}
-				// One `vision` write carries both tiers. Writing `vision` as a whole
-				// object is deliberate: the two tiers are mutually exclusive, and a
-				// stale endpoint left behind would silently outlive the switch.
-				let vision
+				// One write carries both tiers. The ops name LEAF paths rather than the
+				// whole `vision` object: a 0.2.x deployment accepts a write only where
+				// that exact path is volatile in the entry's own Config schema, and the
+				// plugin marks TOP-LEVEL fields (a volatile ancestor covers its subtree,
+				// which is also why an ancestor and its child are never both marked).
+				// The tiers stay mutually exclusive because switching withdraws the other
+				// one explicitly — a stale endpoint left behind would outlive the switch.
+				const ops = []
+				const set = (path, field) => ops.push({ op: 'set', path, value: field })
+				const unset = (path) => ops.push({ op: 'unset', path })
 				let keyNote = ''
 				if (source === 'endpoint') {
 					const baseURL = text(value.endpoint.baseURL).trim()
@@ -387,21 +463,24 @@ window.__ModuleLoader__.load({
 						setStatus('baseURL 需要是 http(s):// 开头的完整地址（例如 https://gateway.example/v1）。')
 						return
 					}
-					vision = { endpoint: { baseURL, model } }
+					const endpoint = { baseURL, model }
 					const api = text(value.endpoint.api).trim()
-					if (api.length > 0) vision.endpoint.api = api
+					if (api.length > 0) endpoint.api = api
 					const name = text(value.endpoint.name).trim()
-					if (name.length > 0) vision.endpoint.name = name
+					if (name.length > 0) endpoint.name = name
 					const apiKeyEnv = text(value.endpoint.apiKeyEnv).trim()
-					if (apiKeyEnv.length > 0) vision.endpoint.apiKeyEnv = apiKeyEnv
+					if (apiKeyEnv.length > 0) endpoint.apiKeyEnv = apiKeyEnv
 					const apiKey = text(value.endpoint.apiKey)
 					if (apiKey.length > 0) {
-						vision.endpoint.apiKey = apiKey
-						keyNote = '（新 key 已交给 Host 写入凭据库，不会显示在这里）'
+						endpoint.apiKey = apiKey
+						keyNote = '（新 key 已交给 Host 写入凭据库，随后会从配置里抹掉）'
 					}
 					// Declared explicitly because pi-ai's default for a route is
 					// text-only, which would make the endpoint useless for images.
-					vision.endpoint.images = value.endpoint.images !== false
+					endpoint.images = value.endpoint.images !== false
+					unset(['vision', 'provider'])
+					unset(['vision', 'model'])
+					set(['vision', 'endpoint'], endpoint)
 				} else {
 					const provider = text(value.vision.provider).trim()
 					const model = text(value.vision.model).trim()
@@ -409,19 +488,23 @@ window.__ModuleLoader__.load({
 						setStatus('vision 的 provider 与 model 都不能为空。')
 						return
 					}
-					vision = { provider, model }
+					unset(['vision', 'endpoint'])
+					set(['vision', 'provider'], provider)
+					set(['vision', 'model'], model)
 				}
+				set(['mode'], value.mode)
+				set(['instruction'], value.instruction)
+				set(['maxTokens'], maxTokens)
+				set(['timeoutMs'], timeoutMs)
+				set(['label'], value.label === true)
 				setStatus('保存中…')
 				try {
-					await scope.set('mode', value.mode)
-					await scope.set('vision', vision)
-					await scope.set('instruction', value.instruction)
-					await scope.set('maxTokens', maxTokens)
-					await scope.set('timeoutMs', timeoutMs)
-					await scope.set('label', value.label === true)
+					if (client === undefined) throw new Error('这个部署没有 API 远端服务，无法写入配置。')
+					await client.write(ops, revision)
 					// The key was handed over; clear it so it is not kept in the draft.
 					if (keyNote) setDraft({ ...value, endpoint: { ...value.endpoint, apiKey: '' } })
 					setStatus('已保存 — 下一次判定即刻生效，无需重启。' + keyNote)
+					await reload()
 					await load()
 				} catch (error) {
 					setStatus('保存失败：' + (error && error.message ? error.message : String(error)))
@@ -560,6 +643,20 @@ window.__ModuleLoader__.load({
 					])
 			])
 
+			// A keyed 0.2.x configuration slot is asked for two views: the bundle page
+			// renders `summary` for the row and `page` for the opened form. This sits
+			// after every hook so the hook order never depends on the view.
+			if (props.view === 'summary') {
+				const route = routeOf(effective.vision)
+				const endpoint = routeOf(route.endpoint)
+				const label = text(endpoint.baseURL).length > 0
+					? `${ENDPOINT_PROVIDER} / ${text(endpoint.model)}（自定义端点）`
+					: route.provider && route.model
+						? `${text(route.provider)} / ${text(route.model)}`
+						: '尚未配置'
+				return h('span', { style: styles.status }, `图片旁路识别 · ${text(effective.mode) || 'digest'} · ${label}`)
+			}
+
 			return h('div', { style: styles.card }, [
 				h('div', { style: styles.head, key: 'head' }, [
 					h('h4', { style: styles.title, key: 't' }, 'image-router · 图片旁路识别'),
@@ -651,10 +748,37 @@ window.__ModuleLoader__.load({
 		 * under it is its own service name and must be declared separately — the
 		 * official models section declares `remote`, `remote.credentials`,
 		 * `remote.llm` and `remote.settings` as four entries for the same reason.
-		 * This card reads `remote.settings.describe()` for the configured routes and
-		 * `remote.llm.*` for the capability oracle.
+		 * This card reads `remote.settings` for the section and the configured routes
+		 * and `remote.llm` for the capability oracle.
+		 *
+		 * `settingsScope` is deliberately NOT declared. It existed only in 0.1.x, and
+		 * declaring it gated this entry on a service a 0.2.x runtime never provides:
+		 * the entry stayed `pending (waiting for service: settingsScope)` and the web
+		 * boot aborted with "1 entry did not activate" — the plugin could not be
+		 * installed at all on dsh-desktop 0.2.0-rc.2. `remote.settings` carries the
+		 * same read/write surface on both generations, so nothing is lost by it.
 		 */
-		const inject = ['slots', 'remote', 'remote.settings', 'remote.llm', 'settingsScope']
+		const inject = ['slots', 'remote', 'remote.settings', 'remote.llm']
+
+		/**
+		 * Where the card is claimed, one entry per generation.
+		 *
+		 * `slots.inject` runs its callback only once an owner DECLARES the slot, so
+		 * claiming both is how one card serves two generations without sniffing a
+		 * version: in a given runtime only one of these is ever declared, so exactly
+		 * one card is registered, and the other claim is inert.
+		 *
+		 *  - `plugins.bundle.config` (0.2.x) — a bundle's own configuration, keyed by
+		 *    the bundle's package name, rendered on the bundle's page. Its owner asks
+		 *    for two views (`summary` on the row, `page` for the form); the card draws
+		 *    the one-liner for `summary`.
+		 *  - `settings.plugin.item` (0.1.x) — the plugin-configuration tab, keyed by
+		 *    the settings namespace it edits.
+		 */
+		const CARD_SLOTS = [
+			{ name: 'plugins.bundle.config', options: { key: PACKAGE } },
+			{ name: 'settings.plugin.item', options: { key: NAMESPACE } }
+		]
 
 		/**
 		 * Activation report, readable as `window.__imageRouter` in the browser.
@@ -662,8 +786,10 @@ window.__ModuleLoader__.load({
 		 * The failure modes on this path are silent by nature — a pending entry and
 		 * a card that never rendered both look like "the option is missing" — so the
 		 * report records which step was reached instead of leaving it to inference.
+		 * It is also the only way to tell which of the two slots a live deployment
+		 * declared.
 		 */
-		const report = { applied: false, slots: false, scope: false, registered: false, error: undefined }
+		const report = { applied: false, slots: false, registered: [], error: undefined }
 		const publish = () => {
 			try {
 				window.__imageRouter = report
@@ -680,53 +806,50 @@ window.__ModuleLoader__.load({
 			report.remoteNamespaces = ['settings', 'llm'].filter((key) => ctx.remote?.[key] !== undefined)
 			publish()
 			try {
-				const scope = ctx.settingsScope.bind({ namespace: NAMESPACE })
-				report.scope = true
 				// The Remote table is handed to the card as a plain object so a render
 				// never touches the gated context: reading a namespace there is exactly
 				// what threw `cannot get property "remote.settings" without inject`.
 				const remote = { settings: ctx.remote.settings, llm: ctx.remote.llm }
-				ctx.slots.inject('settings.plugin.item', () => {
-					report.slotDispatched = true
-					publish()
-					// The registration options follow the contract the official section
-					// ships for its own cards: `name` + `key` claim the namespace, and
-					// `inject` supplies the hooks the card is handed. `locale` is
-					// deliberately NOT declared — this card draws its own copy inline
-					// and registers no locale entries, and declaring a copy namespace
-					// with nothing under it is a claim the card cannot honour.
-					const cardOptions = {
-						name: 'settings.plugin.item',
-						key: NAMESPACE,
-						// No injected hooks: the card reads its state through the bound
-						// settings scope and the Remote table, both captured above.
-						inject: () => ({})
-					}
-						report.slotOptions = Object.keys(cardOptions)
-						ctx.slots.register(cardOptions, () => h(Card, { scope, remote }))
-						report.registered = true
-						// Read the ledger back. The tab renders the intersection of the
-						// namespaces the Host serves with the entries this slot actually
-						// holds, so "I called register" is a weaker claim than "the slot
-						// kept it". Recording what the slot reports turns a silent absence
-						// into a readable one.
+				for (const slot of CARD_SLOTS) {
+					ctx.slots.inject(slot.name, () => {
 						try {
-							const entries = ctx.slots.entries('settings.plugin.item')
-							report.slotEntryCount = Array.isArray(entries) ? entries.length : -1
-							report.slotHasMine = Array.isArray(entries)
-								? entries.some((entry) => (entry?.options?.key ?? entry?.key) === NAMESPACE)
-								: false
-							report.slotEntryKeys = Array.isArray(entries)
-								? entries.map((entry) => entry?.options?.key ?? entry?.key ?? '?').slice(0, 12)
-								: []
-							report.slotLocaleOfMine = Array.isArray(entries)
-								? entries.find((entry) => (entry?.options?.key ?? entry?.key) === NAMESPACE)?.options?.locale
-								: undefined
+							// The registration options follow the contract the owning
+							// surface ships for its own contributions: `name` + the slot's
+							// key. `inject` supplies the hooks the card is handed, and this
+							// card needs none — it reads the Remote table captured above.
+							// `locale` is deliberately NOT declared: this card draws its
+							// own copy inline and registers no locale entries, and
+							// declaring a copy namespace with nothing under it is a claim
+							// the card cannot honour.
+							const cardOptions = { name: slot.name, inject: () => ({}), ...slot.options }
+							ctx.slots.register(cardOptions, (props) => h(Card, { remote, view: props?.view }))
+							report.registered.push(slot.name)
+							report.slotOptions = Object.keys(cardOptions)
+							// Read the ledger back. An owner renders the intersection of
+							// what it serves with the entries this slot actually holds, so
+							// "I called register" is a weaker claim than "the slot kept
+							// it". Recording what the slot reports turns a silent absence
+							// into a readable one.
+							try {
+								const entries = ctx.slots.entries(slot.name)
+								const keyOf = (entry) => entry?.options?.key ?? entry?.key ?? '?'
+								report.slotEntryCount = Array.isArray(entries) ? entries.length : -1
+								report.slotHasMine = Array.isArray(entries) ? entries.some((entry) => keyOf(entry) === slot.options.key) : false
+								report.slotEntryKeys = Array.isArray(entries) ? entries.map(keyOf).slice(0, 12) : []
+								report.slotLocaleOfMine = Array.isArray(entries)
+									? entries.find((entry) => keyOf(entry) === slot.options.key)?.options?.locale
+									: undefined
+							} catch (error) {
+								report.ledgerReadError = String(error)
+							}
+							publish()
 						} catch (error) {
-							report.ledgerReadError = String(error)
+							report.error = `${slot.name}: ${String(error)}`
+							publish()
+							console.warn('[image-router] settings card unavailable:', error)
 						}
-						publish()
 					})
+				}
 			} catch (error) {
 				report.error = String(error)
 				publish()

@@ -1,8 +1,9 @@
 # dsh-image-router
 
 > [!IMPORTANT]
-> **当前版本 `0.4.4`，已发布到 npm，适配 DSH `0.1.5-rc.1+`（已在 `0.1.5-rc.1` 上真机验证）。**
+> **当前版本 `0.4.4`，已发布到 npm，适配 DSH `0.1.5-rc.1+` 与 `0.2.x`（`0.1.5-rc.1`、`dsh-desktop 0.2.0-rc.2` 两条线分别验证）。**
 > 若你装到的是更早的 `0.1.0`，那是本插件的第一个（已废弃的）构建，会让「设置 → 模型」页加载失败 —— 用 `dsh plugin --profile web add dsh-image-router@latest` 直接装最新版即可。
+> **`0.4.4` 及更早的版本装不进 `0.2.x`**：插件的浏览器半边声明了 0.2.x 已删除的 `settingsScope` 服务，条目永久 pending，web boot 会以 `1 entry did not activate` 中止整次启动（详见〈0.2.x 与 0.1.x 的差异〉）。
 
 <div align="center">
   <b style="font-size: 1.15em;">让纯文本模型也能「看图」</b><br />
@@ -14,7 +15,7 @@
   <a href="https://opensource.org/licenses/MIT"><img alt="License: MIT" src="https://img.shields.io/badge/License-MIT-yellow.svg" /></a>
   <a href="https://github.com/zhiwuli0228/dsh-image-router/stargazers"><img alt="GitHub stars" src="https://img.shields.io/github/stars/zhiwuli0228/dsh-image-router" /></a><br /><br />
   <a href="https://www.npmjs.com/package/@deepseek-ai/dsh?activeTab=versions"><img alt="支持的 DSH 版本：0.1.5-rc.1+（已在 rc.1 验证）" src="https://img.shields.io/badge/DSH-0.1.5--rc.1%2B_%28verified_rc.1%29-4d6bfe" /></a>
-  <a href="#测试"><img alt="tests" src="https://img.shields.io/badge/tests-68_passing-brightgreen" /></a>
+  <a href="#测试"><img alt="tests" src="https://img.shields.io/badge/tests-71_passing-brightgreen" /></a>
   <a href="#-一分钟安装"><img alt="install" src="https://img.shields.io/badge/install-one_command-4d6bfe" /></a><br /><br />
   <img alt="图片旁路识别" src="https://img.shields.io/badge/-图片旁路识别-4d6bfe" />
   <img alt="会话模型不变" src="https://img.shields.io/badge/-会话模型不变-4d6bfe" />
@@ -71,7 +72,7 @@ dsh plugin --profile web add dsh-image-router && dsh web
 
 ### 装完 2 步
 
-1. 打开 **设置 → 插件 → 插件配置 → image-router**。
+1. 打开 **设置 → 插件 → 插件配置 → image-router**（0.2.x 上这个页面变成了插件管理页：在 **设置 → 插件** 里找到 `dsh-image-router` 这个 bundle，它的配置区就是同一张卡片）。
 2. 「视觉模型」下拉里选一个支持图片的模型；**没有现成的就切到「自定义端点」**，只填三样：**地址、模型名、API Key** → 保存。
 
 然后随便发一张图 —— 你会看到 `[图片分析 · <你选的模型>]` 开头的文字，代替图片进入会话。
@@ -100,7 +101,8 @@ dsh plugin --profile web add dsh-image-router@<版本号>
 | 现象 | 原因与解决 |
 |---|---|
 | 发图后什么都没发生 | 先看审计文件有没有 `mounted mode=digest`。没有 → 插件没挂上，确认包在 `dsh.profile.bundles` 里并重启 `dsh web`。有 → 看贴图那一刻有没有 `digest session=… chars=…` 行。 |
-| 卡片不出现，控制台也没有报错 | 浏览器一半的 `inject` 声明了加载器满足不了的依赖，entry 会永久 pending 且毫无提示。当前版本已修正；若仍在旧版本上，升级即可。浏览器里读 `window.__imageRouter` 可看到走到哪一步。 |
+| 卡片不出现，控制台也没有报错 | 浏览器一半的 `inject` 声明了加载器满足不了的依赖，entry 会永久 pending 且毫无提示。当前版本已修正；若仍在旧版本上，升级即可。浏览器里读 `window.__imageRouter` 可看到走到哪一步、以及卡片最终挂在哪个槽位（`registered`）。 |
+| **装完就起不来**：`web boot: 1 entry did not activate`，并指名 `dsh-image-router: pending (waiting for service: settingsScope)` | `0.4.4` 及更早的浏览器半边声明了 0.2.x 已删除的 `settingsScope`。启动时它永久 pending，web boot 等它就绪，于是整次启动被中止（桌面端会在 `%APPDATA%\@deepseek-ai\dsh-desktop\logs\crash-*-web-boot.log` 留一份崩溃日志）。**升级到 `0.5.0+`**；暂时脱困可以把插件从该 profile 的 `dsh.profile.bundles` 里摘掉。 |
 | 「设置 → 模型」打不开，或提示「填入各提供方的 API 密钥」 | `0.3.1` 之前版本的已知问题（schema 描述为空导致设置页整体加载失败）。升级即可。 |
 | 分析很慢（半分钟以上） | 多半是推理模型把 token 预算花在思考上。插件会自动用更大预算重试一次（审计记 `digest-retry`），但你可以把卡片里的 `maxTokens` 从 `900` 直接改成 `4000` 省掉那一轮；或换非推理的视觉模型。 |
 | 分析是空的，收到的是图片占位 | 看审计里的 `digest-empty` / `digest-failed` 行 —— 现在会带上实际收到的 chunk 类型与 finish 原因，据此判断是模型没输出、预算被思考吃光、还是路由配置问题。 |
@@ -260,10 +262,28 @@ session=<id> error=<消息> at=<栈帧>                                         
 
 | | |
 |---|---|
-| DSH | `0.1.5-rc.1+`（已在 `0.1.5-rc.1` 上真机验证） |
+| DSH `0.1.5-rc.1+`（CLI：`dsh web` / headless / sdk / acp） | 真机验证。设置节走 `settings.register`，卡片挂在 `settings.plugin.item`。 |
+| DSH `0.2.x`（`dsh-desktop 0.2.0-rc.2`） | 真机验证。设置节＝条目自己的 `Config`，卡片挂在 `plugins.bundle.config`。 |
 | Node.js | ≥ 20（CI 覆盖 20 / 22 / 24） |
 | 平台 | Windows / Linux / macOS |
-| profile | `web` 验证最充分；headless / sdk / acp 也能激活（`sessionController` 缺席时插件不包装，只注册工具） |
+| profile | `web` / `desktop` 验证最充分；headless / sdk / acp 也能激活（`sessionController` 缺席时插件不包装，只注册工具） |
+
+## 🧬 0.2.x 与 0.1.x 的差异
+
+两代换了客户端服务名与设置模型，插件对两者都支持，靠**能力探测**而不是版本号判断：
+
+| | 0.1.x | 0.2.x |
+|---|---|---|
+| 设置节的来源 | `settings.register(ns, schema, { base })`，插件的 `base` 层叠在用户节之下 | **条目自己的 `Config` 就是该节**（`ns` = loader 条目 id），服务只投影（`describe`）与写入（`mutate`） |
+| 可写字段 | 无限制 | 只有 schema 里标了 `volatile` 的路径可写（插件标的是顶层字段，`vision` 覆盖其子树） |
+| `volatile` 字段怎么读 | 标记对解析无影响，值就是普通值 | **标记会改变解析**：该字段解析成 cosmokit 实时取值器（`{ get(), [Symbol(cosmokit.volatile.write)] }`），`~standard.validate`（loader 交给 `apply` 的那份）也一样。插件因此先把配置解包（`plainConfig`）再判读；官方 pi-ai 也是 `config.providers.get()` 这么读的 |
+| 配置落在哪 | `$DSH_HOME/settings.yaml` 的节（0.2.x 启动时会被导入并改名 `.imported`） | 该 profile 的补丁层（`cordis.patch.yml`） |
+| 卡片挂在哪 | `settings.plugin.item`，按设置命名空间 key | `plugins.bundle.config`，按包名 key（在插件页上该 bundle 的页里） |
+| 浏览器侧绑定 | `settingsScope` 服务 + `scope.set(field, value)` | 没有；一律走 `remote.settings.describe()` / `mutate(ns, ops, revision)` |
+| 密钥 | 卡片写进节，Host 随即取走存进凭据库 | 同上，并且 Host 存完凭据后会**把明文从配置里 `unset`**（否则它会留在 profile 补丁里） |
+| `package.json` 的 `dsh.client.inject` | 声明客户端模块依赖 | 只是**加载顺序 / 预取**信息（0.2.x 自带的插件作者文档与 `client-ui-workspace` 源码都写明 *informational, never apply sequencing*），所以清单里那个 0.2.x 已不存在的 `@deepseek-ai/dsh-client-runtime` 不会阻塞激活；真正的闸门是模块自己的 `inject` 服务列表 |
+
+**为什么必须这么做**：0.4.4 把 `settingsScope` 写进了浏览器半边的 `inject`。0.2.x 的 web boot 会遍历每个客户端条目，凡是 `fiber.state !== 'active'` 就报错退出，pending 的还会列出解析不到的服务名 —— 于是整次启动被一句 `web boot: 1 entry did not activate … pending (waiting for service: settingsScope)` 中止，配置写什么都没用，因为这一步发生在读取配置之前。现在两半都只用两代都有的服务（客户端 `slots` / `remote` / `remote.settings` / `remote.llm`，宿主侧 `settings` / `llm` / `credentials` / `tools` / `fs` / `attachments` / `sessionController`），缺 `settings.register` 时只记一行 `settings-unsupported`。
 
 ## 🛠️ 开发与测试
 
@@ -277,7 +297,7 @@ node tools/check-contract.mjs   # 打包契约（CI 跑的就是它）
 
 **打包契约**由 `tools/check-contract.mjs` 一处定义，`ci.yml` 与 `release.yml` 都调它，所以两边不会漂移、你也能跑 CI 跑的同一份。它守住四件事:① 声明的补丁文件存在;② 声明的浏览器一半存在;③ 入口导出满足 loader 消费的那套(含 `Config` 必须能答 Cordis 的 `~standard.validate`、settings 服务的调用与 `toJSON()` 字段图 —— 断言的是**两种 schema 形态都满足的契约**,`safeParse` 刻意不在其中,因为 fallback 有而真 schemastery 没有);④ **README 顶部那行版本号与 `package.json` 一致** —— 这两个文件靠人手同步,而 npm 页面显示一个、registry 服务另一个,除此之外没人会发现它们漂移。
 
-68 个用例：配置归一化与校验（含旧模式名映射、schema 物化出的空对象/空数组、端点档补齐 vision 路由与两档优先级）、图片信号判定、digest 的替换/多图合并/失败保留/无图直通/dryRun/落盘失败/完成块兜底/对象 finish 原因/预算被思考吃光后重试、`describe_image` 的注册/读文件/问题透传/拒绝路径、设置节的注册与「保存后下一轮即生效」、校验失败被忽略、自定义端点写入上游路由与凭据（含"跳过/失败不得记为已同步"的可重试契约、以及"合并而非覆盖上游 profile"）、图片能力 oracle、**schema 契约**、**浏览器半边激活契约**、**section base 不得遮蔽端点**、switch 的借出‑归还‑放弃状态机、`holdTurns`、`sticky`、冷会话不路由也不告警、审计可写与不可写、无 `sessionController` 时不包装、卸载恢复。
+71 个用例：配置归一化与校验（含旧模式名映射、schema 物化出的空对象/空数组、端点档补齐 vision 路由与两档优先级）、图片信号判定、digest 的替换/多图合并/失败保留/无图直通/dryRun/落盘失败/完成块兜底/对象 finish 原因/预算被思考吃光后重试、`describe_image` 的注册/读文件/问题透传/拒绝路径、设置节的注册与「保存后下一轮即生效」、**0.2.x 式服务（没有 `register`）只记审计不失败**、校验失败被忽略、自定义端点写入上游路由与凭据（含"跳过/失败不得记为已同步"的可重试契约、"合并而非覆盖上游 profile"、以及**密钥写进凭据库后从配置里抹掉**）、图片能力 oracle、**schema 契约（含 `volatile` 与 secret 标记，且不得父子同时标）**、**浏览器半边激活契约（两代槽位各挂一次、`inject` 不得再出现 `settingsScope`、summary/page 两种视图）**、**section base 不得遮蔽端点**、switch 的借出‑归还‑放弃状态机、`holdTurns`、`sticky`、冷会话不路由也不告警、审计可写与不可写、无 `sessionController` 时不包装、卸载恢复。
 
 CI（`.github/workflows/ci.yml`）在 Ubuntu + Windows × Node 20/22/24 上跑同一套用例，并跑上面那份打包契约。
 
@@ -342,6 +362,12 @@ tools/*-probe.mjs        五个运行时探针（digest / tool / switch 序列 /
 15. **`finish.reason` 是对象**：`mapStopReason` 返回 `{ kind: 'stop' | 'max-tokens' | 'error' | … }`，失败细节在 `reason.failure.{code,message}`。拿字符串比会**吞掉适配器报的每一个错误**，把可诊断的失败变成静默的空答复。
 16. **token 预算与模型思考共享**：在 `openai-completions` 上 `maxTokens` 作为 `max_completion_tokens` 发出，推理和正文共用。推理模型可能把预算全花在思考上 —— 此时插件自动用 `max(4×, 4096)`（上限 32768）重试一次。
 17. **`Config` 的 schema 是双形态的**：能解析 `@deepseek-ai/schemastery` 时用它，否则退回零依赖等价实现。解析是**多锚点**的（本文件位置 → 运行中的 CLI → npm 全局根），因为插件装进 profile 后宿主的 `node_modules` 不在 profile 往上的解析路径上。**设置页是遍历 `schema.toJSON()` 渲染的**，所以一个"字段图为空"的描述会让整个模型页加载失败 —— 这是真机踩到的。
+18. **客户端条目的 `inject` 是一道硬闸门，声明错就是启动不了**：0.4.4 声明了 `settingsScope`（0.2.x 已删除），条目永久 pending，web boot 以 `1 entry did not activate` 中止。现在两半只声明两代都有的服务；跨代差异一律走**能力探测**（有没有 `settings.register`、哪个槽位被声明），不猜版本号。
+19. **可写路径必须是 `volatile`**：0.2.x 的 `SettingsForms.write` 会拒绝任何不在条目 schema `volatile` 路径上的写入。标记只打**顶层字段**（`vision` 覆盖 `vision.endpoint.*`），因为 schemastery 拒绝 volatile 套 volatile；且标记直接写在 `meta` 上（`meta.volatile` / `meta.role='secret'`），因为两代 schemastery 的 API 不一致 —— `3.18.2` 没有 `.volatile()`，它的 `.role('secret')` 也不写 `meta.role`（实测 `meta` 仍是 `{}`）。
+20. **卡片写叶子路径，不写整个 `vision`**：`mutate` 的每个 op 路径都要单独过 `volatile` 校验，所以切换两档时要显式 `unset` 另一档（`vision.provider` / `vision.endpoint`），不能指望"整体覆盖"。
+21. **密钥写进凭据库后要从配置里抹掉**：0.1.x 的节本来就不留它；0.2.x 的条目配置**就是** profile 补丁，留一份明文等于把 key 落盘。存完凭据后补一条 `mutate(ns, [{op:'unset', path:['vision','endpoint','apiKey']}])`，审计记 `endpoint-key-scrubbed`。
+22. **同一张卡片挂两个槽位**：`slots.inject` 只在**槽位被声明**时才回调，所以同时认领 `settings.plugin.item`（0.1.x，按设置命名空间 key）与 `plugins.bundle.config`（0.2.x，按包名 key）是安全的 —— 任一运行时只会声明其中一个，另一个静默不触发。`plugins.bundle.config` 的 owner 会要 `summary` 与 `page` 两种视图，summary 只画一行。
+23. **`volatile` 字段在 0.2.x 上不是"值"**：schemastery 会把标了 `meta.volatile` 的字段解析成 cosmokit 实时取值器（`{ get(), [Symbol(cosmokit.volatile.write)] }`），**`~standard.validate` 也一样** —— 也就是 loader 交给 `apply` 的那份配置。第一版移植直接把标记写进 schema，结果 `normalizeConfig` 把取值器当对象、判定配置非法并自我禁用；因为 `traceFile` 是在"无 problem"的返回里才解析的，审计文件干脆是空的，只有真机冷启动才暴露出来。现在 `apply` 与 `normalizeConfig` 都先过 `plainConfig`（递归解包，同时避开"普通对象恰好有 `get`"的误判），官方 pi-ai 读它的 volatile `providers` 用的是同一件事：`config.providers.get()`。
 
 </details>
 
@@ -349,7 +375,12 @@ tools/*-probe.mjs        五个运行时探针（digest / tool / switch 序列 /
 
 | 环节 | 结论 |
 |---|---|
-| 单测 | ✅ 68 个用例 |
+| 单测 | ✅ 71 个用例 |
+| **0.2.x 客户端契约（无 `settingsScope`）** | ✅ 真机（离线运行时）验证：把 `dsh-desktop 0.2.0-rc.2` 内嵌的运行时从 `app.asar` 解出、以独立 `DSH_HOME` 起 `dsh-web`，插件在 0.2.0 上完成挂载（审计见下），boot manifest 里列出 `dsh-image-router` 客户端条目；渲染器那一侧（卡片外观）仍需在 GUI 里看一眼 |
+| **0.2.x 宿主半边激活** | ✅ 真实 0.2.0 运行时冷启动审计：`apply-entered … schema=schemastery`、`tool-registered name=describe_image`、`settings-unsupported register=undefined`、`vision-oracle-registered ns=image-router`、`endpoint-services settings=yes credentials=yes`、`mounted mode=digest …` |
+| **0.2.x 的 `volatile` 实时取值器** | ✅ 实测：0.2.0 侧 `Config({mode:'digest'}).mode` 是 `{ get(), [Symbol(cosmokit.volatile.write)] }`，`.get()` 得值；0.1.5 侧（schemastery 3.18.2）同一标记对解析无影响 —— 第一版实现漏了解包，正是靠这次冷启动（审计文件为空 = 配置在校验阶段就被拒）才发现的 |
+| **0.2.x 可写字段的标记** | ✅ 在 0.2.0 的 schemastery（3.18.4）与 0.1.5 的（3.18.2）上分别读 `Config.dict`：11 个顶层字段带 `meta.volatile`、`vision.endpoint.apiKey` 带 `meta.role='secret'`、父子不同时标记。写路径本身（`remote.settings.mutate` 的 volatile 校验）只有单测与 0.2.0 服务源码两处证据，**尚未在 GUI 里点过保存** |
+| 0.1.x↔0.2.x 跨代：`settings` 服务没有 `register` | ✅ 单测：只记 `settings-unsupported`，条目照常激活、路由照常工作 |
 | 挂载进真实 web profile | ✅ 冷启动审计写 `mounted mode=digest …` |
 | 标准 bundle 形态可装载（bundles → 包内 patch → 部署层覆盖 → `Config` 补默认值） | ✅ 隔离实例冷启动，`schemastery` 与回退 Standard Schema 两条路径都跑过 |
 | 无 `sessionController` 的 profile 仍能启动 | ✅ headless 冷启动 `exit=0` |

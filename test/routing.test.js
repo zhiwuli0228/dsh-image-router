@@ -12,7 +12,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
 
-import { apply, Config, configBase, createEnv, decideRoute, discoverVisionModels, modelAcceptsImages, nameLooksLikeImage, normalizeConfig, promptWantsVision, sameModel, schemaForm } from '../lib/index.js'
+import { apply, Config, configBase, createEnv, decideRoute, discoverVisionModels, LIVE_FIELDS, liveValue, modelAcceptsImages, nameLooksLikeImage, normalizeConfig, plainConfig, promptWantsVision, sameModel, schemaForm } from '../lib/index.js'
 import { ENDPOINT_APIS, ENDPOINT_KEY_REF, ENDPOINT_PROVIDER, endpointSettingsOp, readEndpoint, routeForEndpoint, syncEndpoint } from '../lib/endpoint.js'
 
 const EXTENSIONS = ['png', 'jpg', 'jpeg', 'webp', 'gif']
@@ -310,6 +310,35 @@ test('normalizeConfig treats schema-materialized empty values as absent', () => 
 
 	// An empty vision object is still "no vision route configured".
 	assert.ok(normalizeConfig({ vision: {} }).problems.some((problem) => problem.includes('vision')))
+})
+
+test('a live (volatile) configuration value is unwrapped before it is read', () => {
+	// 0.2.x's schemastery resolves a `meta.volatile` field to a cosmokit cell rather
+	// than to the value, and that is exactly what the loader hands to `apply` (via
+	// `Config['~standard'].validate`). Reading the cell as a value failed every type
+	// check and disabled the plugin with a validation problem — observed by booting
+	// the real 0.2.0 runtime offline, where the trace stayed empty because the
+	// config is rejected before `traceFile` is even read.
+	const cell = (value) => ({ get: () => value, [Symbol('cosmokit.volatile.write')]: () => {} })
+	const resolved = normalizeConfig({
+		mode: cell('switch'),
+		vision: cell({ provider: 'qwen-token-plan-cn', model: 'qwen3.8-flash' }),
+		maxTokens: cell(1200),
+		label: cell(false),
+		instruction: cell('只转录文字')
+	})
+	assert.equal(resolved.problems, undefined, 'a live cell must not read as broken configuration')
+	assert.equal(resolved.mode, 'switch')
+	assert.equal(resolved.vision.provider, 'qwen-token-plan-cn')
+	assert.equal(resolved.maxTokens, 1200)
+	assert.equal(resolved.label, false)
+	assert.equal(resolved.instruction, '只转录文字')
+
+	// A cell nested inside a plain object is reached too, and the value itself is
+	// never mistaken for one (a plain object with a `get` key but no cosmokit slot).
+	assert.equal(plainConfig({ vision: { endpoint: cell({ baseURL: 'https://gateway.example/v1', model: 'm' }) } }).vision.endpoint.baseURL, 'https://gateway.example/v1')
+	assert.deepEqual(plainConfig({ get: 'not-a-cell' }), { get: 'not-a-cell' })
+	assert.equal(liveValue('digest'), 'digest')
 })
 
 test('nameLooksLikeImage matches paths and rejects prose', () => {
@@ -997,6 +1026,36 @@ test('apply registers the editable settings namespace and honours a saved overri
 	assert.equal(controller.calls.length, 0, 'a settings save never touches the session model either')
 })
 
+test('a settings service without register is a traced no-op, not a failed activation', async () => {
+	// 0.2.x deleted the registration API: the entry's own Config IS the section, and
+	// the service only projects it (`describe`) and writes through it (`mutate`). A
+	// plugin that insisted on `register` there would lose its whole settings half —
+	// and one that threw over it would take the boot down with it.
+	const controller = fakeController({ noSelectionApi: true })
+	const llm = fakeLlm()
+	const trace = join(mkdtempSync(join(tmpdir(), 'image-router-projected-')), 'trace.log')
+	const settings = {
+		describes: 0,
+		describe() {
+			this.describes++
+			return []
+		},
+		async mutate() {}
+	}
+	const ctx = fakeContext(controller, llm, { attachments: fakeAttachments(), settings, credentials: fakeCredentials() })
+	apply(ctx, { vision: VISION, traceFile: trace })
+	await flush()
+
+	assert.equal(settings.register, undefined, 'the double really is the 0.2.x shape')
+	assert.ok(readFileSync(trace, 'utf8').includes('settings-unsupported'), 'the skipped registration is audited, not silent')
+
+	// And the plugin still works: the composed entry configuration is already the
+	// configuration in force, so routing is unaffected by the missing API.
+	await controller.prompt({ sessionId: 's1', content: IMAGE })
+	assert.equal(llm.calls[0].provider, VISION.provider)
+	rmSync(join(trace, '..'), { recursive: true, force: true })
+})
+
 test('apply ignores a settings override that does not validate', async () => {
 	const controller = fakeController({ noSelectionApi: true })
 	const llm = fakeLlm()
@@ -1090,7 +1149,7 @@ test('apply writes the custom endpoint upstream as a pi-ai route plus one creden
 	apply(ctx, { vision: { endpoint: ENDPOINT } })
 	await flush()
 
-	assert.equal(settings.mutations.length, 1, 'exactly one settings write is issued')
+	assert.equal(settings.mutations.length, 2, 'the upstream route is written once, then the plaintext key is withdrawn from the configuration')
 	const write = settings.mutations[0]
 	assert.equal(write.namespace, 'llm-pi-ai', 'the route belongs to the upstream pi-ai adapter, not to this plugin')
 	assert.equal(write.ops.length, 1, 'only the path this plugin owns is touched')
@@ -1102,6 +1161,13 @@ test('apply writes the custom endpoint upstream as a pi-ai route plus one creden
 	assert.equal(write.ops[0].value.apiKeyEnv, ENDPOINT_KEY_REF, 'the profile carries only a reference to the secret')
 
 	assert.deepEqual(credentials.sets, [{ ref: ENDPOINT_KEY_REF, value: 'sk-card-typed' }], 'the key itself goes to the credential store')
+
+	// …and then leaves the configuration. The credential is stored, so the section
+	// no longer needs the secret, and on 0.2.x an entry's configuration IS the
+	// settings store (the profile patch) — a key left there would sit on disk in
+	// clear text, which is the one thing this plugin promises not to do.
+	assert.equal(settings.mutations[1].namespace, 'image-router', 'the scrub targets this plugin own section, never the upstream route')
+	assert.deepEqual(settings.mutations[1].ops, [{ op: 'unset', path: ['vision', 'endpoint', 'apiKey'] }])
 })
 
 test('the endpoint tier routes image work through the derived provider', async () => {
@@ -1135,7 +1201,9 @@ test('the endpoint tier withdraws its route when the endpoint is removed, keepin
 
 	settings.save({ vision: { ...VISION, endpoint: ENDPOINT } })
 	await flush()
-	assert.equal(settings.mutations.length, 1, 'saving an endpoint pushes the derived route')
+	const routes = () => settings.mutations.filter((mutation) => mutation.namespace === 'llm-pi-ai')
+	assert.equal(routes().length, 1, 'saving an endpoint pushes the derived route')
+	assert.equal(settings.mutations.length, 2, 'plus the key scrub that follows a stored credential')
 	assert.equal(credentials.sets.length, 1)
 
 	// Switching back to a route clears the endpoint rather than merely not mentioning
@@ -1144,9 +1212,10 @@ test('the endpoint tier withdraws its route when the endpoint is removed, keepin
 	settings.save({ vision: { endpoint: undefined, provider: VISION.provider, model: VISION.model } })
 	await flush()
 
-	assert.equal(settings.mutations.length, 2, 'the withdrawal is one more write')
-	assert.deepEqual(settings.mutations[1].ops, [{ op: 'unset', path: ['providers', ENDPOINT_PROVIDER] }])
+	assert.equal(routes().length, 2, 'the withdrawal is one more upstream write')
+	assert.deepEqual(routes()[1].ops, [{ op: 'unset', path: ['providers', ENDPOINT_PROVIDER] }])
 	assert.equal(credentials.sets.length, 1, 'withdrawing a route never deletes a credential the user may reuse')
+	assert.equal(settings.mutations.length, 3, 'no key was retyped, so no further scrub is issued')
 })
 
 test('an unchanged endpoint is not rewritten on every settings event', async () => {
@@ -1160,13 +1229,15 @@ test('an unchanged endpoint is not rewritten on every settings event', async () 
 	// A save that touches only an unrelated field must not re-push the route.
 	settings.save({ instruction: '只转录文字' })
 	await flush()
-	assert.equal(settings.mutations.length, 1, 'the upstream route is written once, not once per settings event')
+	const routes = () => settings.mutations.filter((mutation) => mutation.namespace === 'llm-pi-ai')
+	assert.equal(routes().length, 1, 'the upstream route is written once, not once per settings event')
+	assert.equal(settings.mutations.length, 2, 'and the one key scrub is not repeated either')
 
 	// Changing the endpoint itself is a new signature and must be pushed.
 	settings.save({ vision: { endpoint: { ...ENDPOINT, model: 'other-vision' } } })
 	await flush()
-	assert.equal(settings.mutations.length, 2)
-	assert.deepEqual(settings.mutations[1].ops[0].value.models, [{ id: 'other-vision', input: ['text', 'image'] }])
+	assert.equal(routes().length, 2)
+	assert.deepEqual(routes()[1].ops[0].value.models, [{ id: 'other-vision', input: ['text', 'image'] }])
 })
 
 test('a deployment without the settings service keeps routing on the explicit route', async () => {
@@ -1316,6 +1387,24 @@ test('Config satisfies every consumer the harness reads it through', () => {
 		assert.equal(parsed.success, true)
 		assert.equal(parsed.data.mode, 'digest')
 	}
+
+	// 4. A 0.2.x configuration surface writes a field only when that path is marked
+	//    `volatile` in the entry's own schema (`SettingsForms.write`: "Config field
+	//    … is not volatile"), and redacts the ones declared `role: 'secret'`. Both
+	//    flags live in `meta`, so they are asserted on the live schema nodes — and
+	//    never on an ancestor AND its child, which schemastery rejects.
+	if (schemaForm === 'schemastery') {
+		const dict = Config.dict ?? {}
+		for (const key of LIVE_FIELDS) assert.equal(dict[key]?.meta?.volatile, true, `${key} must be writable from a live surface`)
+		assert.notEqual(dict.tool?.meta?.volatile, true, 'a mount-time field must not be offered as live-editable')
+		assert.notEqual(dict.traceFile?.meta?.volatile, true)
+		assert.equal(dict.vision.meta.volatile, true, 'the vision subtree is covered by its top-level ancestor')
+		assert.notEqual(dict.vision.dict.provider?.meta?.volatile, true, 'a child of a volatile node must stay unmarked — schemastery rejects a volatile node inside a volatile one')
+		assert.equal(dict.vision.dict.endpoint.dict.apiKey.meta.role, 'secret', 'the credential is redacted on the way out')
+		const descriptor = JSON.stringify(Config.toJSON())
+		assert.equal(descriptor.includes('"volatile":true'), true, 'the descriptor a form walks carries the marker')
+		assert.equal(descriptor.includes('secret'), true, 'and the secret role with it')
+	}
 })
 
 test('the resolver reaches schemastery through the harness when this file cannot', async () => {
@@ -1393,28 +1482,18 @@ test('the browser half activates and registers its card', () => {
 		useState: (initial) => [initial, () => {}],
 		useEffect: () => {},
 		useCallback: (fn) => fn,
-		useSyncExternalStore: (_s, snapshot) => snapshot(),
 		useMemo: (fn) => fn()
 	}
 	const module = entry.factory((name) => (name === 'react' ? React : (() => { throw new Error(name) })()))
 
 	const registered = []
-	let bound
 	let renderCard
-	const scope = {
-		subscribe: () => () => {},
-		getSnapshot: () => ({ value: {}, writable: true, revision: 1 }),
-		set: async () => {}
-	}
 	const base = {
 		remote: {
 			llm: { listProviders: async () => ({ ok: true, value: [] }) },
-			settings: { describe: async () => ({ ok: true, value: { namespaces: {} } }) }
-		},
-		settingsScope: {
-			bind: (options) => {
-				bound = options
-				return scope
+			settings: {
+				describe: async () => ({ ok: true, value: { namespaces: [{ ns: 'image-router', value: {}, writable: true, revision: 1 }] } }),
+				mutate: async () => {}
 			}
 		},
 		slots: {
@@ -1427,7 +1506,7 @@ test('the browser half activates and registers its card', () => {
 				assert.equal(typeof render, 'function')
 				renderCard = render
 			},
-			entries: () => [{ options: { key: 'image-router' } }]
+			entries: (name) => (name === 'settings.plugin.item' ? [{ options: { key: 'image-router' } }] : [])
 		}
 	}
 	module.apply(declaredContext(base, module.inject))
@@ -1435,21 +1514,100 @@ test('the browser half activates and registers its card', () => {
 	// Every gated service the half reads must be declared, and the Remote table
 	// counts per namespace: `remote` alone left `remote.settings` unreadable, which
 	// surfaced only when the render asked for the configured routes.
+	//
+	// `settingsScope` must NOT be among them: it exists only in 0.1.x, and declaring
+	// it gated this entry on a service the 0.2.x client runtime never provides — the
+	// entry stayed pending and the boot aborted with "1 entry did not activate" on
+	// dsh-desktop 0.2.0-rc.2.
 	assert.deepEqual(
 		module.inject,
-		['slots', 'remote', 'remote.settings', 'remote.llm', 'settingsScope'],
+		['slots', 'remote', 'remote.settings', 'remote.llm'],
 		'declare every gated service, including each Remote namespace the card reads'
 	)
-	assert.deepEqual(registered, ['inject:settings.plugin.item', 'register:settings.plugin.item:image-router'], 'the card is claimed under the namespace the Host serves, or the tab dispatches nothing')
-	assert.equal(bound.namespace, 'image-router', 'both halves must spell the same namespace')
+	assert.equal(module.inject.includes('settingsScope'), false, 'a 0.1.x-only service must never be a declared dependency')
+
+	// One card, two generations: both claims are made, and each fires only where its
+	// owner declares the slot (this double declares both, so both are recorded).
+	assert.deepEqual(registered, [
+		'inject:plugins.bundle.config',
+		'register:plugins.bundle.config:dsh-image-router',
+		'inject:settings.plugin.item',
+		'register:settings.plugin.item:image-router'
+	], 'the 0.2.x bundle slot is keyed by package name, the 0.1.x tab slot by settings namespace')
 
 	// Drive the dispatched render under the same gate: this is the call that threw
 	// in the browser and left the tab with nothing to draw.
 	const element = renderCard()
 	assert.equal(typeof element.type, 'function', 'the registration renders the card component')
 	assert.equal(typeof element.props.remote, 'object', 'the card receives the Remote table')
-	assert.equal(typeof element.props.remote.settings.describe, 'function', 'and specifically the namespaces it reads')
+	assert.equal(typeof element.props.remote.settings.describe, 'function', 'and specifically the namespace table the section is read from')
+	assert.equal(typeof element.props.remote.settings.mutate, 'function', 'and the write path it saves through')
 	assert.equal(typeof element.props.remote.llm.listProviders, 'function')
+})
+
+test('the card draws a one-liner for the bundle page summary view', async () => {
+	// A keyed 0.2.x configuration slot is asked for two views: the bundle page renders
+	// `summary` for its row and `page` once the form is opened. Drawing the form in
+	// the summary view would put a full editor inside a list row.
+	const source = readFileSync(new URL('../client/client.js', import.meta.url), 'utf8')
+	let entry
+	new Function('window', source)({ __ModuleLoader__: { load: (value) => { entry = value } } })
+
+	const hooks = []
+	let cursor = 0
+	const renderElement = (element) => (typeof element.type === 'function' ? element.type(element.props) : element)
+	const React = {
+		createElement: (type, props, ...children) => ({ type, props: props ?? {}, children: children.flat(Infinity).filter((child) => child !== null && child !== undefined && child !== false) }),
+		useState(initial) {
+			const index = cursor++
+			if (hooks.length <= index) hooks[index] = initial
+			return [hooks[index], (next) => { hooks[index] = typeof next === 'function' ? next(hooks[index]) : next }]
+		},
+		useEffect(fn) {
+			const index = cursor++
+			if (hooks.length <= index) {
+				hooks[index] = true
+				queueMicrotask(fn)
+			}
+		},
+		useCallback: (fn) => fn,
+		useMemo: (fn) => fn()
+	}
+	const module = entry.factory((name) => (name === 'react' ? React : (() => { throw new Error(name) })()))
+
+	let renderCard
+	module.apply({
+		remote: {
+			settings: {
+				describe: async () => ({
+					ok: true,
+					value: {
+						namespaces: [{ ns: 'image-router', value: { mode: 'digest', vision: { provider: 'qwen-token-plan-cn', model: 'qwen3.8-flash' } }, writable: true, revision: 3 }]
+					}
+				}),
+				mutate: async () => {}
+			},
+			llm: { listProviders: async () => ({ ok: true, value: [] }) }
+		},
+		slots: { inject: (_name, callback) => callback(), register: (_options, render) => { renderCard = render }, entries: () => [] }
+	})
+
+	// First pass mounts the card and queues its read; the second renders the state
+	// that read produced.
+	cursor = 0
+	renderElement(renderCard({ view: 'summary' }))
+	await flush()
+	await flush()
+	cursor = 0
+	const summary = renderElement(renderCard({ view: 'summary' }))
+	assert.equal(summary.type, 'span', 'the summary view is one line of text, not the form')
+	const line = (Array.isArray(summary.children) ? summary.children : [summary.children]).join('')
+	assert.equal(line.includes('digest'), true, 'and it names the mode in force')
+	assert.equal(line.includes('qwen-token-plan-cn / qwen3.8-flash'), true, 'and the route in force')
+
+	cursor = 0
+	const page = renderElement(renderCard({ view: 'page' }))
+	assert.equal(page.type, 'div', 'the page view still draws the full card')
 })
 
 test('the vision picker is populated from the configured routes', async () => {
@@ -1481,7 +1639,6 @@ test('the vision picker is populated from the configured routes', async () => {
 			}
 		},
 		useCallback: (fn) => fn,
-		useSyncExternalStore: (_subscribe, snapshot) => snapshot(),
 		useMemo: (fn) => fn()
 	}
 	const module = entry.factory((name) => (name === 'react' ? React : (() => { throw new Error(name) })()))
@@ -1495,11 +1652,24 @@ test('the vision picker is populated from the configured routes', async () => {
 	let renderCard
 	module.apply({
 		remote: {
-			settings: { describe: async () => ({ ok: true, value: { writable: true, hasDocument: true, namespaces: [{ ns: 'image-router', value: {} }, { ns: 'llm-pi-ai', value: piAi }] } }) },
+			// Both sections arrive from the same call: `describe()` answers one view per
+			// configurable section, and the card reads its own section and the
+			// configured pi-ai routes out of it.
+			settings: {
+				describe: async () => ({
+					ok: true,
+					value: {
+						writable: true,
+						hasDocument: true,
+						namespaces: [
+							{ ns: 'image-router', value: { mode: 'digest', vision: { provider: 'qwen-token-plan-cn', model: 'qwen3.8-flash' } }, writable: true, revision: 1 },
+							{ ns: 'llm-pi-ai', value: piAi }
+						]
+					}
+				}),
+				mutate: async () => {}
+			},
 			llm: { listProviders: async () => ({ ok: true, value: [] }), discoverModels: async () => ({ ok: true, value: [] }) }
-		},
-		settingsScope: {
-			bind: () => ({ subscribe: () => () => {}, getSnapshot: () => ({ value: { mode: 'digest', vision: { provider: 'qwen-token-plan-cn', model: 'qwen3.8-flash' } }, writable: true, revision: 1 }), set: async () => {} })
 		},
 		slots: { inject: (_n, callback) => callback(), register: (_o, render) => { renderCard = render }, entries: () => [] }
 	})
@@ -1538,11 +1708,11 @@ test('the vision picker is populated from the configured routes', async () => {
 	for (const control of selects) assert.ok((control.children ?? []).length > 0, 'no dropdown may render without any option')
 })
 
-test('the browser half reports a broken scope instead of throwing at activation', () => {
-	// `settingsScope` is a declared service now, so the loader gates activation on
-	// it. A context that answers the declaration but hands back nothing usable must
-	// still be a reported no-op: an activation throw takes the whole shell's plugin
-	// load down with it.
+test('the browser half reports an unusable slot service instead of throwing at activation', () => {
+	// The card is no longer gated on a settings service the runtime may not have, so
+	// the remaining activation hazard is the slot ledger itself. A context that
+	// refuses it must still be a reported no-op: an activation throw takes the whole
+	// shell's plugin load down with it.
 	const source = readFileSync(new URL('../client/client.js', import.meta.url), 'utf8')
 	let entry
 	new Function('window', source)({ __ModuleLoader__: { load: (value) => { entry = value } } })
@@ -1551,7 +1721,6 @@ test('the browser half reports a broken scope instead of throwing at activation'
 		useState: (initial) => [initial, () => {}],
 		useEffect: () => {},
 		useCallback: (fn) => fn,
-		useSyncExternalStore: (_s, snapshot) => snapshot(),
 		useMemo: (fn) => fn()
 	}
 	const module = entry.factory((name) => (name === 'react' ? React : (() => { throw new Error(name) })()))
@@ -1560,11 +1729,14 @@ test('the browser half reports a broken scope instead of throwing at activation'
 	const originalWarn = console.warn
 	console.warn = () => { warned++ }
 	try {
-		module.apply(declaredContext({ remote: { llm: {}, settings: {} }, settingsScope: undefined, slots: {} }, module.inject))
+		module.apply(declaredContext({
+			remote: { llm: {}, settings: {} },
+			slots: { inject() { throw new Error('no slot ledger in this shell') } }
+		}, module.inject))
 	} finally {
 		console.warn = originalWarn
 	}
-	assert.equal(warned, 1, 'an unusable scope is reported once, not thrown')
+	assert.equal(warned, 1, 'an unusable slot ledger is reported once, not thrown')
 })
 
 // ── The credential never enters this plugin's own configuration ─────────────
