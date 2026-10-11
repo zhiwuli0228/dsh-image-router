@@ -1,7 +1,7 @@
 # dsh-image-router
 
 > [!IMPORTANT]
-> **当前版本 `0.4.4`，已发布到 npm，适配 DSH `0.1.5-rc.1+` 与 `0.2.x`（`0.1.5-rc.1`、`dsh-desktop 0.2.0-rc.2` 两条线分别验证）。**
+> **当前版本 `0.5.0`，已发布到 npm，适配 DSH `0.1.5-rc.1+` 与 `0.2.x`（`0.1.5-rc.1`、`dsh-desktop 0.2.0-rc.2` 两条线分别验证）。**
 > 若你装到的是更早的 `0.1.0`，那是本插件的第一个（已废弃的）构建，会让「设置 → 模型」页加载失败 —— 用 `dsh plugin --profile web add dsh-image-router@latest` 直接装最新版即可。
 > **`0.4.4` 及更早的版本装不进 `0.2.x`**：插件的浏览器半边声明了 0.2.x 已删除的 `settingsScope` 服务，条目永久 pending，web boot 会以 `1 entry did not activate` 中止整次启动（详见〈0.2.x 与 0.1.x 的差异〉）。
 
