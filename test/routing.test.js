@@ -1699,7 +1699,25 @@ test('the sidebar entry opens a page carrying the configuration form', async () 
 
 	const headings = find(page, (node) => node.type === 'h1')
 	assert.equal(headings.length, 1, 'the page draws one banner heading')
-	assert.equal(textOf(headings[0]), '图片路由')
+
+	// The banner copies the UI language the sidebar row follows. Re-render under each
+	// language instead of inheriting the runner's locale: a CI box is often en_US while
+	// a developer's is not, and only one of those should decide whether this passes.
+	const headingText = () => {
+		cursor = 0
+		const heading = find(renderElement(renderPanel()), (node) => node.type === 'h1')
+		return heading.length === 1 ? textOf(heading[0]) : undefined
+	}
+	const previousDocument = globalThis.document
+	try {
+		globalThis.document = { documentElement: { lang: 'zh-CN' } }
+		assert.equal(headingText(), '图片路由', 'the banner follows a Chinese UI language')
+		globalThis.document = { documentElement: { lang: 'en-US' } }
+		assert.equal(headingText(), 'Image Router', 'the banner follows an English UI language')
+	} finally {
+		if (previousDocument === undefined) delete globalThis.document
+		else globalThis.document = previousDocument
+	}
 
 	// The card's own banner must not be repeated inside the page.
 	const cardHeadings = find(form, (node) => node.type === 'h4')
