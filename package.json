@@ -1,7 +1,7 @@
 {
   "name": "dsh-image-router",
   "version": "0.5.0",
-  "description": "DeepSeek Harness plugin: analyse images out of band with a vision model — pasted images are digested into text before admission and a describe_image tool covers image paths, all without ever changing the session's model.",
+  "description": "DeepSeek Harness plugin: analyse images out of band with a vision model — pasted images are digested into text before admission and a describe_image tool covers image paths, all without ever changing the session's model. Ships a left-sidebar entry with its own configuration page.",
   "license": "MIT",
   "author": "zhiwuli0228",
   "type": "module",
@@ -55,9 +55,9 @@
     },
     "client": {
       "inject": [
-        "@deepseek-ai/dsh-client-runtime",
-        "@deepseek-ai/dsh-client-ui-settings",
-        "@deepseek-ai/dsh-api-remotes"
+        "@deepseek-ai/dsh-api-remotes",
+        "@deepseek-ai/dsh-client-ui-layout",
+        "@deepseek-ai/dsh-client-ui-sidebar"
       ],
       "platform": "web"
     }

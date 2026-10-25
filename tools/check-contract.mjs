@@ -6,17 +6,23 @@
  *
  *   node tools/check-contract.mjs
  *
- * Four things are guarded, each one a mistake that has actually happened or that
+ * Six things are guarded, each one a mistake that has actually happened or that
  * cannot be undone once published:
  *
  *   1. `dsh.bundle.patch` points at a file that exists and parses.
  *   2. A declared browser half exports a bundle `dsh-client-modules` can read.
- *   3. The entry exports what the loader consumes -- and `Config` answers to the three
+ *   3. That half really claims the sidebar entry (`sidebar.panellist`) AND the page it
+ *      opens (`main`). A row with no page is a click that does nothing; a page with no
+ *      row is unreachable. The ids must match, and grep is enough to refuse a build
+ *      that lost either half before it reaches a profile.
+ *   4. `dsh.client.inject` names the client bundle rows the entry is composed after
+ *      (the layout owns `main`, the sidebar owns `sidebar.panellist`).
+ *   5. The entry exports what the loader consumes -- and `Config` answers to the three
  *      consumers that read it (Cordis, the settings service's compiler and its
  *      descriptor walker). The assertions are the contract BOTH schema forms satisfy:
  *      `safeParse` is deliberately absent, because the dependency-free fallback
  *      provides it while the real schemastery does not.
- *   4. The README's "current version" line matches `package.json`. These are two
+ *   6. The README's "current version" line matches `package.json`. These are two
  *      hand-edited files that must agree, the npm page shows one while the registry
  *      serves the other, and nothing else would notice them drifting.
  *
@@ -64,6 +70,34 @@ await check('the declared browser half exists', () => {
 	if (typeof client !== 'string') throw new Error('dsh.client requires a string exports["./client"]')
 	read(client)
 	return client
+})
+
+/**
+ * The sidebar entry is two registrations in one bundle. String assertions, not a
+ * render: this tool runs in CI without a DOM, and the failure it must catch is a
+ * bundle that lost one half during a refactor — which reads exactly like "the row
+ * does nothing" at runtime.
+ */
+await check('the browser half claims the sidebar entry and its page', () => {
+	const client = read(manifest.exports['./client'])
+	if (!client.includes("'sidebar.panellist'")) throw new Error("client.js never mentions the 'sidebar.panellist' slot")
+	if (!/name:\s*'sidebar\.panellist'/.test(client)) throw new Error('client.js never registers into sidebar.panellist')
+	if (!/name:\s*'main'/.test(client)) throw new Error("client.js never registers the 'main' page")
+	// One id for both slots: the sidebar row selects, the layout dispatches by it.
+	const ids = client.match(/PANEL_ID\s*=\s*'([^']+)'/)?.[1]
+	if (typeof ids !== 'string') throw new Error('client.js has no PANEL_ID constant to share between the two slots')
+	const uses = client.match(/PANEL_ID\b/g)?.length ?? 0
+	if (uses < 3) throw new Error(`PANEL_ID is used ${uses} time(s): it must key both slots and be declared once`)
+	return `${ids} (row + page)`
+})
+
+await check('the client manifest names the rows the entry is composed after', () => {
+	const rows = manifest.dsh?.client?.inject
+	if (!Array.isArray(rows)) throw new Error('dsh.client.inject must be an array of client bundle package names')
+	for (const row of ['@deepseek-ai/dsh-client-ui-layout', '@deepseek-ai/dsh-client-ui-sidebar']) {
+		if (!rows.includes(row)) throw new Error(`dsh.client.inject must name ${row}, which owns one of the entry's slots`)
+	}
+	return rows.join(', ')
 })
 
 await check('the entry exports what the loader reads', async () => {

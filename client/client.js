@@ -64,6 +64,18 @@ window.__ModuleLoader__.load({
 		const PI_AI_NAMESPACE = 'llm-pi-ai'
 		/** Route key the Host derives for a custom endpoint (lib/endpoint.js keeps the same value). */
 		const ENDPOINT_PROVIDER = 'image-router-vision'
+		/**
+		 * The sidebar row id, and the `main` keyed-slot key it opens.
+		 *
+		 * The sidebar resolves a row's id/label/order from its `sidebar.panellist`
+		 * list registration; `ctx.layout.selectPanel(id)` then dispatches the layout's
+		 * root-scoped `main` keyed slot by that same id. Two slots, one spelling — an
+		 * id registered in only one of them is a row that opens nothing (or a page
+		 * nothing can reach).
+		 */
+		const PANEL_ID = 'image-router'
+		/** Row order among the shipped global panels; ties keep registration order. */
+		const PANEL_ORDER = 40
 		/** Section fields the card edits; each is written as its own path op. */
 		const FIELDS = ['mode', 'vision', 'instruction', 'maxTokens', 'timeoutMs', 'label', 'endpoint']
 
@@ -240,11 +252,64 @@ window.__ModuleLoader__.load({
 				padding: '5px 12px',
 				borderRadius: '14px',
 				border: '0.5px solid var(--dsw-alias-border-l3, #cfcfcf)',
-				background: 'var(--dsw-alias-button-primary-fill, transparent)',
-				color: 'inherit',
+				// The brand pair, not `color: inherit`: the fill is the theme's primary
+				// (near-black in the light theme), so an inherited label painted black on
+				// black — the text vanished, which is how 0.6.0's first panel screenshot
+				// read. `label-primary-foreground` is what the shipped buttons pair with
+				// this fill, and both shells define it.
+				background: 'var(--dsw-alias-brand-primary, #0f1115)',
+				color: 'var(--dsw-alias-label-primary-foreground, #ffffff)',
 				cursor: 'pointer'
 			},
-			status: { fontSize: '12px', opacity: 0.7 }
+			status: { fontSize: '12px', opacity: 0.7 },
+			// ── The main panel page (the sidebar row's destination) ──────────────
+			// Geometry follows the shipped entry pages (the plugin manager is the
+			// reference): fill the centre column, scroll inside it, cap the reading
+			// width, and pad the top by the frame's window-chrome clearance so the
+			// heading never lands under a desktop title bar or macOS traffic lights.
+			page: {
+				boxSizing: 'border-box',
+				height: '100%',
+				overflow: 'auto',
+				display: 'flex',
+				flexDirection: 'column',
+				alignItems: 'center',
+				gap: '20px',
+				padding: '0 clamp(20px, 4vw, 44px) 40px'
+			},
+			pageHead: {
+				boxSizing: 'border-box',
+				width: '100%',
+				maxWidth: '960px',
+				display: 'flex',
+				justifyContent: 'space-between',
+				alignItems: 'flex-start',
+				gap: '16px',
+				paddingTop: 'calc(28px + var(--dsh-frame-top-clearance, 0px))'
+			},
+			pageTitle: { margin: 0, fontSize: '20px', fontWeight: 500, lineHeight: '28px' },
+			pageIntro: { margin: '4px 0 0', fontSize: '13px', lineHeight: '20px', opacity: 0.7 },
+			pagePill: {
+				fontSize: '11px',
+				opacity: 0.6,
+				whiteSpace: 'nowrap',
+				border: '0.5px solid var(--dsw-alias-border-l4, #e2e2e2)',
+				borderRadius: '999px',
+				padding: '2px 8px'
+			},
+			/** The panel's section frame: the card form, without the card's own banner. */
+			formPanel: {
+				boxSizing: 'border-box',
+				width: '100%',
+				maxWidth: '960px',
+				display: 'flex',
+				flexDirection: 'column',
+				gap: '10px',
+				padding: '16px',
+				borderRadius: '16px',
+				border: '0.5px solid var(--dsw-alias-border-l4, #e2e2e2)',
+				background: 'var(--dsw-alias-bg-l2, transparent)'
+			}
 		}
 
 		const text = (value) => (typeof value === 'string' ? value : value === undefined || value === null ? '' : String(value))
@@ -657,16 +722,10 @@ window.__ModuleLoader__.load({
 				return h('span', { style: styles.status }, `图片旁路识别 · ${text(effective.mode) || 'digest'} · ${label}`)
 			}
 
-			return h('div', { style: styles.card }, [
-				h('div', { style: styles.head, key: 'head' }, [
-					h('h4', { style: styles.title, key: 't' }, 'image-router · 图片旁路识别'),
-					h('span', { style: styles.tag, key: 'g' }, 'namespace: ' + NAMESPACE)
-				]),
-				h('p', { style: styles.hint, key: 'hint' }, [
-					'提示词里的图片会先由下面的视觉路由分析成文字再交给当前模型；会话模型不会被切换。',
-					h('br', { key: 'br' }),
-					'此处的值覆盖 profile 补丁层的配置，保存后立即生效。'
-				]),
+			// The form body is shared by the bundle card and the main panel the sidebar
+			// row opens: the panel page draws its own banner, so it takes the body
+			// without the card's head and hint rather than nesting a second frame.
+			const formBody = [
 				sourcePanel,
 				field({
 					name: 'mode',
@@ -726,6 +785,98 @@ window.__ModuleLoader__.load({
 					}, '还原'),
 					h('span', { key: 'status', style: styles.status }, status)
 				])
+			]
+
+			// 0.2.x's bundle page asks for `page`; the sidebar panel asks for `panel`.
+			// Both draw the same form — the panel omits the card's own banner because
+			// the page around it already draws the heading.
+			if (props.view === 'panel') return h('div', { style: styles.formPanel, key: 'panel' }, formBody)
+
+			return h('div', { style: styles.card }, [
+				h('div', { style: styles.head, key: 'head' }, [
+					h('h4', { style: styles.title, key: 't' }, 'image-router · 图片旁路识别'),
+					h('span', { style: styles.tag, key: 'g' }, 'namespace: ' + NAMESPACE)
+				]),
+				h('p', { style: styles.hint, key: 'hint' }, [
+					'提示词里的图片会先由下面的视觉路由分析成文字再交给当前模型；会话模型不会被切换。',
+					h('br', { key: 'br' }),
+					'此处的值覆盖 profile 补丁层的配置，保存后立即生效。'
+				]),
+				...formBody
+			])
+		}
+
+		/**
+		 * The sidebar row's label.
+		 *
+		 * A thunk: a list registration's label is re-resolved on every projection
+		 * (the sidebar reads it for the row text, the accessible name and the
+		 * collapsed tooltip), so the row follows the UI language without being
+		 * re-registered. This half registers no locale namespace of its own — the
+		 * card draws its copy inline — so the language is read from the document.
+		 */
+		function panelLabel() {
+			try {
+				const lang = (typeof document !== 'undefined' && document.documentElement && document.documentElement.lang)
+					|| (typeof navigator !== 'undefined' && navigator.language)
+					|| 'zh'
+				return String(lang).toLowerCase().startsWith('zh') ? '图片路由' : 'Image Router'
+			} catch {
+				return '图片路由'
+			}
+		}
+
+		/**
+		 * The sidebar row's icon.
+		 *
+		 * Inline SVG on purpose: a hand-written client bundle may require only the
+		 * shell's seed words (`react`), while the shipped bundles import their icons
+		 * from `@deepseek-ai/dsh-client-ui-primitives` — a module this factory cannot
+		 * reach. `currentColor` keeps the glyph in the sidebar's own colour ramp; the
+		 * owner supplies the requested edge (`size`) and the selected state.
+		 */
+		function PanelIcon(props) {
+			const size = typeof props?.size === 'number' && Number.isFinite(props.size) && props.size > 0 ? props.size : 20
+			return h('svg', {
+				width: size,
+				height: size,
+				viewBox: '0 0 20 20',
+				fill: 'none',
+				'aria-hidden': 'true',
+				style: { display: 'block', opacity: props?.active === false ? 0.72 : 1 }
+			}, [
+				h('rect', { key: 'frame', x: 2.6, y: 3.6, width: 14.8, height: 12.8, rx: 3, stroke: 'currentColor', strokeWidth: 1.3 }),
+				h('circle', { key: 'sun', cx: 7.1, cy: 8.1, r: 1.25, stroke: 'currentColor', strokeWidth: 1.3 }),
+				h('path', { key: 'ridge', d: 'M3.3 14.3 6.9 10.8l2.5 2.3 2.2-2 4.7 4.3', stroke: 'currentColor', strokeWidth: 1.3, strokeLinecap: 'round', strokeLinejoin: 'round' })
+			])
+		}
+
+		/**
+		 * The main panel behind the sidebar row: the configuration page.
+		 *
+		 * The layout dispatches its root-scoped `main` keyed slot by the id the
+		 * selected sidebar row carries (`entryKey`), so this component mounts only
+		 * while that row is selected — selecting the conversation unmounts it. It
+		 * draws the same form as the bundle card, which keeps one source of truth for
+		 * the settings section instead of a second editor that can drift.
+		 */
+		function Panel(props) {
+			React.useEffect(() => {
+				try {
+					window.__imageRouter = { ...(window.__imageRouter ?? {}), panelRendered: true, panelRenderedAt: Date.now() }
+				} catch {
+					/* a frozen global must never break the page */
+				}
+			}, [])
+			return h('div', { style: styles.page }, [
+				h('header', { style: styles.pageHead, key: 'head' }, [
+					h('div', { key: 'heading' }, [
+						h('h1', { style: styles.pageTitle, key: 'title' }, panelLabel()),
+						h('p', { style: styles.pageIntro, key: 'intro' }, '图片在进入会话之前先由视觉路由分析成文字，会话模型不会被切换；这里保存的值从下一轮起生效。')
+					]),
+					h('span', { style: styles.pagePill, key: 'pill' }, 'dsh-image-router')
+				]),
+				h(Card, { key: 'card', remote: props.remote, view: 'panel' })
 			])
 		}
 
@@ -810,6 +961,31 @@ window.__ModuleLoader__.load({
 				// never touches the gated context: reading a namespace there is exactly
 				// what threw `cannot get property "remote.settings" without inject`.
 				const remote = { settings: ctx.remote.settings, llm: ctx.remote.llm }
+
+				/**
+				 * Read a slot's ledger back after registering into it.
+				 *
+				 * An owner renders the intersection of what it serves with the entries a
+				 * slot actually holds, so "I called register" is a weaker claim than "the
+				 * slot kept it". Recording what the slot reports turns a silent absence
+				 * into a readable one — for the panel and the sidebar row this is the
+				 * only place the outcome of a claim becomes visible.
+				 *
+				 * @param slotName - the slot that was just registered into.
+				 * @param expected - the key/id the entry should carry.
+				 */
+				const recordLedger = (slotName, expected) => {
+					try {
+						const entries = ctx.slots.entries(slotName)
+						const keyOf = (entry) => entry?.options?.key ?? entry?.options?.id ?? entry?.key ?? entry?.id ?? '?'
+						const count = Array.isArray(entries) ? entries.length : -1
+						report.ledger = { ...(report.ledger ?? {}), [slotName]: count }
+						report.slotHasMine = Array.isArray(entries) ? entries.some((entry) => keyOf(entry) === expected) : false
+					} catch (error) {
+						report.ledgerReadError = String(error)
+					}
+				}
+
 				for (const slot of CARD_SLOTS) {
 					ctx.slots.inject(slot.name, () => {
 						try {
@@ -850,6 +1026,56 @@ window.__ModuleLoader__.load({
 						}
 					})
 				}
+
+				// ── The sidebar entry, and the page it opens ────────────────────────
+				//
+				// Two root-scoped slots, one id. The sidebar owns the row: it reads the
+				// list registration's `id`/`order`/`label` and calls
+				// `ctx.layout.selectPanel(id)` when the row is clicked; the layout then
+				// dispatches its `main` keyed slot by that same id. Registering only one
+				// of the two gives a row that opens nothing, or a page nothing reaches —
+				// so both are claimed, and neither replaces a shipped entry: a list/id
+				// registration adds beside what is already there.
+				//
+				// `slots.inject` again (declaration = claim): a deployment that never
+				// declares these slots leaves the claims inert instead of failing the
+				// entry, which is what keeps this half installable on both generations.
+				ctx.slots.inject('sidebar.panellist', () => {
+					try {
+						ctx.slots.register({
+							name: 'sidebar.panellist',
+							id: PANEL_ID,
+							order: PANEL_ORDER,
+							// A thunk: the owner re-resolves list labels on every projection
+							// (row text, accessible name, collapsed tooltip), so the row
+							// follows the UI language without being re-registered.
+							label: () => panelLabel()
+						}, (props) => h(PanelIcon, { size: props?.size, active: props?.active }))
+						report.registered.push('sidebar.panellist')
+						recordLedger('sidebar.panellist', PANEL_ID)
+						publish()
+					} catch (error) {
+						report.error = `sidebar.panellist: ${String(error)}`
+						publish()
+						console.warn('[image-router] sidebar entry unavailable:', error)
+					}
+				})
+
+				ctx.slots.inject('main', () => {
+					try {
+						ctx.slots.register(
+							{ name: 'main', key: PANEL_ID, inject: () => ({}) },
+							() => h(Panel, { remote })
+						)
+						report.registered.push('main')
+						recordLedger('main', PANEL_ID)
+						publish()
+					} catch (error) {
+						report.error = `main: ${String(error)}`
+						publish()
+						console.warn('[image-router] main panel unavailable:', error)
+					}
+				})
 			} catch (error) {
 				report.error = String(error)
 				publish()

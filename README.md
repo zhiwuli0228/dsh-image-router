@@ -1,7 +1,7 @@
 # dsh-image-router
 
 > [!IMPORTANT]
-> **当前版本 `0.5.0`，已发布到 npm，适配 DSH `0.1.5-rc.1+` 与 `0.2.x`（`0.1.5-rc.1`、`dsh-desktop 0.2.0-rc.2` 两条线分别验证）。**
+> **当前版本 `0.5.0`，已发布到 npm。从 0.6.0 起它是「带左侧栏入口」的 DSH 插件：侧栏多一行「图片路由」，点开是独立配置页（0.2.1 的 `main` keyed 槽 + `sidebar.panellist` list 槽契约），同时保留原来的设置卡片。适配 DSH `0.1.5-rc.1+` 与 `0.2.x`：`0.1.5-rc.1`、`dsh-desktop 0.2.0-rc.2` 为真机验证线；`0.2.1-rc.3` 按 npm 发布包契约适配，侧栏入口 + 配置页已在 0.1.5 真机 GUI 渲染通过，0.2.1 桌面端外观待重启确认。**
 > 若你装到的是更早的 `0.1.0`，那是本插件的第一个（已废弃的）构建，会让「设置 → 模型」页加载失败 —— 用 `dsh plugin --profile web add dsh-image-router@latest` 直接装最新版即可。
 > **`0.4.4` 及更早的版本装不进 `0.2.x`**：插件的浏览器半边声明了 0.2.x 已删除的 `settingsScope` 服务，条目永久 pending，web boot 会以 `1 entry did not activate` 中止整次启动（详见〈0.2.x 与 0.1.x 的差异〉）。
 
@@ -14,8 +14,8 @@
   <a href="https://github.com/zhiwuli0228/dsh-image-router/actions/workflows/release.yml"><img alt="release" src="https://github.com/zhiwuli0228/dsh-image-router/actions/workflows/release.yml/badge.svg" /></a>
   <a href="https://opensource.org/licenses/MIT"><img alt="License: MIT" src="https://img.shields.io/badge/License-MIT-yellow.svg" /></a>
   <a href="https://github.com/zhiwuli0228/dsh-image-router/stargazers"><img alt="GitHub stars" src="https://img.shields.io/github/stars/zhiwuli0228/dsh-image-router" /></a><br /><br />
-  <a href="https://www.npmjs.com/package/@deepseek-ai/dsh?activeTab=versions"><img alt="支持的 DSH 版本：0.1.5-rc.1+（已在 rc.1 验证）" src="https://img.shields.io/badge/DSH-0.1.5--rc.1%2B_%28verified_rc.1%29-4d6bfe" /></a>
-  <a href="#测试"><img alt="tests" src="https://img.shields.io/badge/tests-71_passing-brightgreen" /></a>
+  <a href="https://www.npmjs.com/package/@deepseek-ai/dsh?activeTab=versions"><img alt="适配的 DSH：0.2.1-rc.3 侧栏槽位契约 + 0.1.5-rc.1 兼容" src="https://img.shields.io/badge/DSH-0.2.1--rc.3_contract_%2B_0.1.5--rc.1-4d6bfe" /></a>
+  <a href="#测试"><img alt="tests" src="https://img.shields.io/badge/tests-74_passing-brightgreen" /></a>
   <a href="#-一分钟安装"><img alt="install" src="https://img.shields.io/badge/install-one_command-4d6bfe" /></a><br /><br />
   <img alt="图片旁路识别" src="https://img.shields.io/badge/-图片旁路识别-4d6bfe" />
   <img alt="会话模型不变" src="https://img.shields.io/badge/-会话模型不变-4d6bfe" />
@@ -64,7 +64,7 @@ dsh plugin --profile web add dsh-image-router && dsh web
 1. 执行 dsh plugin --profile web add dsh-image-router
 2. 确认 dsh-image-router 已出现在 $DSH_HOME/profiles/web/package.json 的 dsh.profile.bundles 里
 3. 提醒我重启 dsh web
-4. 重启后告诉我：打开「设置 → 插件 → 插件配置 → image-router」，视觉模型那栏怎么填
+4. 重启后告诉我：左侧栏多出来的「图片路由」行点开是什么样，视觉模型那栏怎么填
 遇到报错先查 https://github.com/zhiwuli0228/dsh-image-router README 的常见问题。
 ```
 
@@ -72,7 +72,7 @@ dsh plugin --profile web add dsh-image-router && dsh web
 
 ### 装完 2 步
 
-1. 打开 **设置 → 插件 → 插件配置 → image-router**（0.2.x 上这个页面变成了插件管理页：在 **设置 → 插件** 里找到 `dsh-image-router` 这个 bundle，它的配置区就是同一张卡片）。
+1. 点**左侧栏的「图片路由」行**（0.6.0+：中间栏直接打开配置页；再点会话行回去）；也可以走设置里的同款卡片 —— **设置 → 插件 → 插件配置 → image-router**（0.2.x 上这个页面变成了插件管理页：在 **设置 → 插件** 里找到 `dsh-image-router` 这个 bundle，它的配置区就是同一张卡片）。
 2. 「视觉模型」下拉里选一个支持图片的模型；**没有现成的就切到「自定义端点」**，只填三样：**地址、模型名、API Key** → 保存。
 
 然后随便发一张图 —— 你会看到 `[图片分析 · <你选的模型>]` 开头的文字，代替图片进入会话。
@@ -145,12 +145,33 @@ profile 补丁层有 live reload（`patchReload: live`），实测配置改动�
 - **🔒 会话模型一动不动**：这是与「切换到视觉模型」类方案的根本区别。不写 `model`/`selection`，模型选择器不跳，没有 `[model changed]` 提示，会话历史里留下的是文字分析。
 - **🔧 `describe_image` 工具（按需）**：模型可以像调用普通工具那样分析磁盘上的图片文件（`describe_image(file_path, question?)`），**任何模型都能用** —— 因为图片从不进入会话，`read_image` 那道「当前路由必须声明 image」的门槛不适用。
 - **🧭 两种给视觉模型的方式**：① 从「设置 → 模型」里已配好的模型中**点选支持图片的**（宿主侧图片能力 oracle 按 `inputModalities` 过滤）；② 填**自定义端点**（baseURL + 模型 + API Key），插件把它翻译成上游 `llm-pi-ai` 的一条普通路由。
-- **⚙️ 图形界面配置，保存即生效**：**设置 → 插件 → 插件配置** 里的卡片，改完立刻用于下一次判定（不需要重启、不需要手写 YAML）。
+- **⚙️ 图形界面配置，保存即生效**：两处入口、同一张表单 —— **设置 → 插件 → 插件配置** 里的卡片，以及**左侧栏「图片路由」行打开的那一页**。改完立刻用于下一次判定（不需要重启、不需要手写 YAML）。
+- **🧭 左侧栏常驻入口（0.6.0 新增）**：侧栏面板行多一个图标 + 「图片路由」一行，点开在中间栏打开独立配置页，返回会话只需再点会话行 —— 不用每次进设置里翻三层。它注册的是 `sidebar.panellist` 的**新增**一行（`order: 40`），不替换任何内置面板；插件未配置时页面照常打开，只是提示先选视觉路由。
 - **🔐 API Key 只写不落盘**：密钥写进凭据库（`refs.IMAGE_ROUTER_VISION_API_KEY`），只留引用名在路由里；解析结果、设置节、卡片草稿三处都会剥掉它，不回显、不写进配置文件、不进审计日志。
 - **🧩 不自己实现协议**：线协议、模型发现、图片投影、重试全部交给 `@deepseek-ai/dsh-llm-pi-ai`，插件只负责把卡片上的字段写成 DSH 的配置。
 - **🛡️ 失败即放行**：视觉调用失败（配额 / 超时 / 报错）时不替换图片，把原请求交给原路径，让它给出**真实的**错误，而不是被插件掩盖。任何插件内部异常都只写审计 + 一条 warning。
 - **📝 审计文件**：挂载、每次分析、用了哪条路由、重试、失败原因都记一行 —— 「我配的端点到底生效了吗」有一个可读的答案。
-- **🧪 68 个单测 + 全平台 CI**：Ubuntu + Windows × Node 20/22/24。
+- **🧪 74 个单测 + 全平台 CI**：Ubuntu + Windows × Node 20/22/24，外加一份打包契约（含「侧栏入口与主面板必须同 id」的断言）。
+
+## 🧭 左侧栏入口
+
+除了设置里的卡片，插件在侧栏注册一行入口，并把「配置页」注册到布局的主面板槽：
+
+```
+┌──── 侧栏 ────┬──────────── 中间栏 ────────────┐
+│  ＋ 新会话    │  图片路由          dsh-image-router │
+│  …会话…      │  图片在进入会话之前先由视觉路由分析成文字，  │
+│  ⬚ 插件      │  会话模型不会被切换；这里保存的值从下一轮起生效。│
+│  🖼 图片路由  │  ┌──────────────────────────┐  │
+│  ⚙ 设置      │  │ 视觉来源 / 模型 / 端点 / 保存 / 还原 │  │
+└──────────────┴──────────────────────────┘
+```
+
+- **一行两槽、同一个 id**：侧栏行注册在 `sidebar.panellist`（list 槽，`id: image-router`），配置页注册在 `main`（keyed 槽，`key: image-router`）。侧栏行被点击时布局按该 id 切换中间栏 —— 两个槽里的 id 必须一致，否则就是「点了没反应」或「页面进不去」，单测与打包契约都把这一条钉住了。
+- **不碰内置面板**：这是**新增**注册（`order: 40`），不会覆盖 / 移除任何自带行；卸载插件后这一行随之消失。
+- **语言跟随界面**：行标签是 thunk（`label: () => ...`），按 `document.lang` 返回「图片路由 / Image Router」，不需要重新注册。
+- **图标内联 SVG**：手写客户端包只能 `require('react')`（平台 seed 词），拿不到内置图标包 —— 所以图标用 `currentColor` 内联 SVG，颜色跟随侧栏主题，选中态由宿主传 `active`。
+- **降级**：两个槽都用 `slots.inject` 认领（槽被声明才回调）。运行时不声明这两个槽时认领保持惰性，客户端条目照常激活 —— 不会因为侧栏入口把整个 web boot 拖成 pending。
 
 ## 🖼️ 它长什么样
 
@@ -262,8 +283,9 @@ session=<id> error=<消息> at=<栈帧>                                         
 
 | | |
 |---|---|
-| DSH `0.1.5-rc.1+`（CLI：`dsh web` / headless / sdk / acp） | 真机验证。设置节走 `settings.register`，卡片挂在 `settings.plugin.item`。 |
+| DSH `0.1.5-rc.1+`（CLI：`dsh web` / headless / sdk / acp） | 真机验证。设置节走 `settings.register`，卡片挂在 `settings.plugin.item`；侧栏入口（若该版本声明 `sidebar.panellist` / `main`）同一套代码。 |
 | DSH `0.2.x`（`dsh-desktop 0.2.0-rc.2`） | 真机验证。设置节＝条目自己的 `Config`，卡片挂在 `plugins.bundle.config`。 |
+| DSH `0.2.1`（`dsh-desktop 0.2.1-rc.3` 内嵌运行时） | 按 npm 发布的 `0.2.1-rc.3` 包契约适配：`main` keyed 槽（按 `entryKey` 分发）＋ `sidebar.panellist` list 槽（`id`/`order`/`label` 元数据）＋ 原 `plugins.bundle.config` 卡片。单测与打包契约覆盖，同一套注册代码已在 0.1.5 真机 GUI 渲染通过；**0.2.1 桌面端外观待重启 GUI 确认**。 |
 | Node.js | ≥ 20（CI 覆盖 20 / 22 / 24） |
 | 平台 | Windows / Linux / macOS |
 | profile | `web` / `desktop` 验证最充分；headless / sdk / acp 也能激活（`sessionController` 缺席时插件不包装，只注册工具） |
@@ -279,9 +301,10 @@ session=<id> error=<消息> at=<栈帧>                                         
 | `volatile` 字段怎么读 | 标记对解析无影响，值就是普通值 | **标记会改变解析**：该字段解析成 cosmokit 实时取值器（`{ get(), [Symbol(cosmokit.volatile.write)] }`），`~standard.validate`（loader 交给 `apply` 的那份）也一样。插件因此先把配置解包（`plainConfig`）再判读；官方 pi-ai 也是 `config.providers.get()` 这么读的 |
 | 配置落在哪 | `$DSH_HOME/settings.yaml` 的节（0.2.x 启动时会被导入并改名 `.imported`） | 该 profile 的补丁层（`cordis.patch.yml`） |
 | 卡片挂在哪 | `settings.plugin.item`，按设置命名空间 key | `plugins.bundle.config`，按包名 key（在插件页上该 bundle 的页里） |
+| 侧栏入口 | 两侧都有 `sidebar.panellist`（list 槽）与 `main`（keyed 槽）；行 id 即主面板 key | 同左；布局按当前面板 id 以 `entryKey` 分发 `main` |
 | 浏览器侧绑定 | `settingsScope` 服务 + `scope.set(field, value)` | 没有；一律走 `remote.settings.describe()` / `mutate(ns, ops, revision)` |
 | 密钥 | 卡片写进节，Host 随即取走存进凭据库 | 同上，并且 Host 存完凭据后会**把明文从配置里 `unset`**（否则它会留在 profile 补丁里） |
-| `package.json` 的 `dsh.client.inject` | 声明客户端模块依赖 | 只是**加载顺序 / 预取**信息（0.2.x 自带的插件作者文档与 `client-ui-workspace` 源码都写明 *informational, never apply sequencing*），所以清单里那个 0.2.x 已不存在的 `@deepseek-ai/dsh-client-runtime` 不会阻塞激活；真正的闸门是模块自己的 `inject` 服务列表 |
+| `package.json` 的 `dsh.client.inject` | 声明客户端模块依赖 | 官方包把它写成**客户端包名行**（参考 `plugin-manager`：`api-remotes` + `locale` + `layout` + `sidebar`）。0.6.0 起插件改同一形状：`@deepseek-ai/dsh-api-remotes`、`@deepseek-ai/dsh-client-ui-layout`、`@deepseek-ai/dsh-client-ui-sidebar` —— 这三行是侧栏入口所在的组合。真正的服务闸门仍是模块自己的 `inject` 列表（`slots`/`remote`/`remote.settings`/`remote.llm`） |
 
 **为什么必须这么做**：0.4.4 把 `settingsScope` 写进了浏览器半边的 `inject`。0.2.x 的 web boot 会遍历每个客户端条目，凡是 `fiber.state !== 'active'` 就报错退出，pending 的还会列出解析不到的服务名 —— 于是整次启动被一句 `web boot: 1 entry did not activate … pending (waiting for service: settingsScope)` 中止，配置写什么都没用，因为这一步发生在读取配置之前。现在两半都只用两代都有的服务（客户端 `slots` / `remote` / `remote.settings` / `remote.llm`，宿主侧 `settings` / `llm` / `credentials` / `tools` / `fs` / `attachments` / `sessionController`），缺 `settings.register` 时只记一行 `settings-unsupported`。
 
@@ -295,9 +318,9 @@ node tools/check-contract.mjs   # 打包契约（CI 跑的就是它）
 
 > `node --test test/` **不可移植**：Node 20 会扫描目录，Node 22+ 把 `test/` 当成单个入口文件去加载而报 `MODULE_NOT_FOUND`。
 
-**打包契约**由 `tools/check-contract.mjs` 一处定义，`ci.yml` 与 `release.yml` 都调它，所以两边不会漂移、你也能跑 CI 跑的同一份。它守住四件事:① 声明的补丁文件存在;② 声明的浏览器一半存在;③ 入口导出满足 loader 消费的那套(含 `Config` 必须能答 Cordis 的 `~standard.validate`、settings 服务的调用与 `toJSON()` 字段图 —— 断言的是**两种 schema 形态都满足的契约**,`safeParse` 刻意不在其中,因为 fallback 有而真 schemastery 没有);④ **README 顶部那行版本号与 `package.json` 一致** —— 这两个文件靠人手同步,而 npm 页面显示一个、registry 服务另一个,除此之外没人会发现它们漂移。
+**打包契约**由 `tools/check-contract.mjs` 一处定义，`ci.yml` 与 `release.yml` 都调它，所以两边不会漂移、你也能跑 CI 跑的同一份。它守住五件事:① 声明的补丁文件存在;② 声明的浏览器一半存在且真的注册了侧栏入口与主面板(字符串断言：`sidebar.panellist` 行 + `name: 'main'` 页);③ 入口导出满足 loader 消费的那套(含 `Config` 必须能答 Cordis 的 `~standard.validate`、settings 服务的调用与 `toJSON()` 字段图 —— 断言的是**两种 schema 形态都满足的契约**,`safeParse` 刻意不在其中,因为 fallback 有而真 schemastery 没有);④ `dsh.client.inject` 里写着侧栏入口所在的两个包行(`ui-layout` / `ui-sidebar`);⑤ **README 顶部那行版本号与 `package.json` 一致** —— 这两个文件靠人手同步,而 npm 页面显示一个、registry 服务另一个,除此之外没人会发现它们漂移。
 
-71 个用例：配置归一化与校验（含旧模式名映射、schema 物化出的空对象/空数组、端点档补齐 vision 路由与两档优先级）、图片信号判定、digest 的替换/多图合并/失败保留/无图直通/dryRun/落盘失败/完成块兜底/对象 finish 原因/预算被思考吃光后重试、`describe_image` 的注册/读文件/问题透传/拒绝路径、设置节的注册与「保存后下一轮即生效」、**0.2.x 式服务（没有 `register`）只记审计不失败**、校验失败被忽略、自定义端点写入上游路由与凭据（含"跳过/失败不得记为已同步"的可重试契约、"合并而非覆盖上游 profile"、以及**密钥写进凭据库后从配置里抹掉**）、图片能力 oracle、**schema 契约（含 `volatile` 与 secret 标记，且不得父子同时标）**、**浏览器半边激活契约（两代槽位各挂一次、`inject` 不得再出现 `settingsScope`、summary/page 两种视图）**、**section base 不得遮蔽端点**、switch 的借出‑归还‑放弃状态机、`holdTurns`、`sticky`、冷会话不路由也不告警、审计可写与不可写、无 `sessionController` 时不包装、卸载恢复。
+74 个用例：配置归一化与校验（含旧模式名映射、schema 物化出的空对象/空数组、端点档补齐 vision 路由与两档优先级）、图片信号判定、digest 的替换/多图合并/失败保留/无图直通/dryRun/落盘失败/完成块兜底/对象 finish 原因/预算被思考吃光后重试、`describe_image` 的注册/读文件/问题透传/拒绝路径、设置节的注册与「保存后下一轮即生效」、**0.2.x 式服务（没有 `register`）只记审计不失败**、校验失败被忽略、自定义端点写入上游路由与凭据（含"跳过/失败不得记为已同步"的可重试契约、"合并而非覆盖上游 profile"、以及**密钥写进凭据库后从配置里抹掉**）、图片能力 oracle、**schema 契约（含 `volatile` 与 secret 标记，且不得父子同时标）**、**浏览器半边激活契约（四个槽位各挂一次：两代设置卡片 + 侧栏行 + 主面板；`inject` 不得再出现 `settingsScope`；summary/panel 视图分离；侧栏行与主面板必须同 id；行标签跟随界面语言；侧栏图标为内联 SVG）**、**section base 不得遮蔽端点**、switch 的借出‑归还‑放弃状态机、`holdTurns`、`sticky`、冷会话不路由也不告警、审计可写与不可写、无 `sessionController` 时不包装、卸载恢复。
 
 CI（`.github/workflows/ci.yml`）在 Ubuntu + Windows × Node 20/22/24 上跑同一套用例，并跑上面那份打包契约。
 
@@ -308,7 +331,7 @@ CI（`.github/workflows/ci.yml`）在 Ubuntu + Windows × Node 20/22/24 上跑�
 lib/index.js             宿主一半：配置归一化、准入前替换、describe_image、审计、端点档
 lib/endpoint.js          自定义端点档：翻译成上游 llm-pi-ai 路由 + 凭据
 lib/settings.js          设置命名空间注册
-client/client.js         浏览器一半：设置卡片（两档选择器、端点表单）
+client/client.js         浏览器一半：设置卡片 + 侧栏入口（图标行 + 配置页，共用同一张表单）
 cordis.patch.yml         包内补丁：只插入一条 loader 条目（部署无关）
 examples/                配置示例
 tools/check-contract.mjs 打包契约（两个工作流共用）
@@ -375,8 +398,10 @@ tools/*-probe.mjs        五个运行时探针（digest / tool / switch 序列 /
 
 | 环节 | 结论 |
 |---|---|
-| 单测 | ✅ 71 个用例 |
+| 单测 | ✅ 74 个用例 |
 | **0.2.x 客户端契约（无 `settingsScope`）** | ✅ 真机（离线运行时）验证：把 `dsh-desktop 0.2.0-rc.2` 内嵌的运行时从 `app.asar` 解出、以独立 `DSH_HOME` 起 `dsh-web`，插件在 0.2.0 上完成挂载（审计见下），boot manifest 里列出 `dsh-image-router` 客户端条目；渲染器那一侧（卡片外观）仍需在 GUI 里看一眼 |
+| **0.2.1 侧栏入口契约** | ✅ 对 npm 发布的 `0.2.1-rc.3` 包取证：`dsh-client-ui-layout` 的 `main` 是根作用域 keyed 槽、按 `entryKey`（当前面板 id）分发；`dsh-client-ui-sidebar` 渲染 `sidebar.panellist` list 行并解析 `id`/`order`/`label`，点击时 `ctx.layout.selectPanel(id)`；官方 `plugin-manager` 即以此形态注册侧栏行 + 主面板。本插件的单测断言：四个槽位各注册一次、行与页共用 `image-router`、行标签跟随 `document.lang`、图标为内联 SVG、面板视图渲染同一张表单且不再画卡片标题。同一套注册代码已在 0.1.5 真机 GUI 渲染通过（见下一行）；**0.2.1 桌面端页面外观仍需重启确认** —— 本机只装了桌面 App，其 asar 内嵌运行时无法脱离 Electron 单独起 web |
+| **侧栏入口真机渲染（0.1.5 线）** | ✅ 独立 `DSH_HOME` + `dsh --profile verify` + 本机 Edge（Playwright 驱动）真机渲染：侧栏出现「图片路由」行（含内联 SVG 图标），点击后中间栏切换到配置页（`<h1>图片路由</h1>`、`保存`/`还原`、视觉来源表单）；页面内 `window.__imageRouter.registered = ["main","sidebar.panellist","settings.plugin.item"]`、`ledger = { main: 1, "sidebar.panellist": 1 }`、`slotHasMine: true`，无 console / page 错误。这次渲染还抓到一个单测看不见的缺陷：按钮 `color: inherit` 让「保存」在黑底上不可见 —— 已改为 `label-primary-foreground` 并补了断言 |
 | **0.2.x 宿主半边激活** | ✅ 真实 0.2.0 运行时冷启动审计：`apply-entered … schema=schemastery`、`tool-registered name=describe_image`、`settings-unsupported register=undefined`、`vision-oracle-registered ns=image-router`、`endpoint-services settings=yes credentials=yes`、`mounted mode=digest …` |
 | **0.2.x 的 `volatile` 实时取值器** | ✅ 实测：0.2.0 侧 `Config({mode:'digest'}).mode` 是 `{ get(), [Symbol(cosmokit.volatile.write)] }`，`.get()` 得值；0.1.5 侧（schemastery 3.18.2）同一标记对解析无影响 —— 第一版实现漏了解包，正是靠这次冷启动（审计文件为空 = 配置在校验阶段就被拒）才发现的 |
 | **0.2.x 可写字段的标记** | ✅ 在 0.2.0 的 schemastery（3.18.4）与 0.1.5 的（3.18.2）上分别读 `Config.dict`：11 个顶层字段带 `meta.volatile`、`vision.endpoint.apiKey` 带 `meta.role='secret'`、父子不同时标记。写路径本身（`remote.settings.mutate` 的 volatile 校验）只有单测与 0.2.0 服务源码两处证据，**尚未在 GUI 里点过保存** |

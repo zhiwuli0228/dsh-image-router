@@ -1451,26 +1451,25 @@ test('the resolver reaches schemastery through the harness when this file cannot
 // activation — omitting it produced a registration that succeeded and then
 // crashed when the tab dispatched it, which reads as a missing option.
 
-test('the client manifest declares only service names this shell provides', () => {
-	// `dsh.client.inject` entries are SERVICE names, not package names: most of
-	// them are not packages at all (`@deepseek-ai/dsh-client-runtime` exists
-	// nowhere on disk, yet every plugin that renders a card declares it), and a
-	// name the shell cannot provide is what leaves an entry pending forever.
-	// The set below is what this deployment's shell serves, read from a live boot.
+test('the client manifest declares the bundles the sidebar entry is seated in', () => {
+	// `dsh.client.inject` on 0.2.x names the PACKAGE rows whose client bundles must
+	// arrive before this one materializes — it is boot composition, not a service
+	// list (the service list is the module's own `inject` export). The sidebar entry
+	// is seated in two of them: the layout owns `main`, the sidebar owns
+	// `sidebar.panellist`. Naming the packages the shipped panel plugins name keeps
+	// this half installable: an unknown row is what leaves an entry pending.
 	const manifest = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'))
-	const served = new Set([
-		'@deepseek-ai/dsh-client-runtime',
-		'@deepseek-ai/dsh-client-ui-settings',
+	const rows = new Set([
 		'@deepseek-ai/dsh-api-remotes',
-		'@deepseek-ai/dsh-client-locale',
-		'@deepseek-ai/dsh-client-ui-theme',
-		'@deepseek-ai/dsh-client-connection',
-		'@deepseek-ai/dsh-client-ui-settings-general'
+		'@deepseek-ai/dsh-client-ui-layout',
+		'@deepseek-ai/dsh-client-ui-sidebar'
 	])
+	assert.deepEqual(manifest.dsh.client.inject, [...rows], 'declare the three rows the entry is composed after')
 	for (const dep of manifest.dsh.client.inject) {
-		assert.ok(served.has(dep), `client inject names a service this shell does not serve: ${dep}`)
+		assert.ok(rows.has(dep), `client inject names a row the runtime does not compose: ${dep}`)
 	}
 	assert.equal(manifest.dsh.client.platform, 'web')
+	assert.equal(typeof manifest.exports['./client'], 'string', 'and the browser half is exported for the module table')
 })
 
 test('the browser half activates and registers its card', () => {
@@ -1487,7 +1486,7 @@ test('the browser half activates and registers its card', () => {
 	const module = entry.factory((name) => (name === 'react' ? React : (() => { throw new Error(name) })()))
 
 	const registered = []
-	let renderCard
+	const renders = new Map()
 	const base = {
 		remote: {
 			llm: { listProviders: async () => ({ ok: true, value: [] }) },
@@ -1502,11 +1501,19 @@ test('the browser half activates and registers its card', () => {
 				callback()
 			},
 			register: (options, render) => {
-				registered.push(`register:${options.name}:${options.key}`)
+				// A list entry carries `id`, a keyed entry `key`; record whichever the
+				// registration shape supplies so the assertion reads the real contract.
+				registered.push(`register:${options.name}:${options.key ?? options.id}`)
 				assert.equal(typeof render, 'function')
-				renderCard = render
+				renders.set(options.name, render)
 			},
-			entries: (name) => (name === 'settings.plugin.item' ? [{ options: { key: 'image-router' } }] : [])
+			entries: (name) => {
+				if (name === 'plugins.bundle.config') return [{ options: { key: 'dsh-image-router' } }]
+				if (name === 'settings.plugin.item') return [{ options: { key: 'image-router' } }]
+				if (name === 'sidebar.panellist') return [{ options: { id: 'image-router' } }]
+				if (name === 'main') return [{ options: { key: 'image-router' } }]
+				return []
+			}
 		}
 	}
 	module.apply(declaredContext(base, module.inject))
@@ -1528,21 +1535,201 @@ test('the browser half activates and registers its card', () => {
 
 	// One card, two generations: both claims are made, and each fires only where its
 	// owner declares the slot (this double declares both, so both are recorded).
+	// Then the sidebar entry and the page it opens. The two must share one id: the
+	// layout dispatches `main` by the id the selected row carries, so a mismatch is
+	// a row that opens nothing.
 	assert.deepEqual(registered, [
 		'inject:plugins.bundle.config',
 		'register:plugins.bundle.config:dsh-image-router',
 		'inject:settings.plugin.item',
-		'register:settings.plugin.item:image-router'
-	], 'the 0.2.x bundle slot is keyed by package name, the 0.1.x tab slot by settings namespace')
+		'register:settings.plugin.item:image-router',
+		'inject:sidebar.panellist',
+		'register:sidebar.panellist:image-router',
+		'inject:main',
+		'register:main:image-router'
+	], 'the settings card keeps both generation slots; the sidebar row and its main panel share one id')
 
 	// Drive the dispatched render under the same gate: this is the call that threw
 	// in the browser and left the tab with nothing to draw.
+	const renderCard = renders.get('plugins.bundle.config')
 	const element = renderCard()
 	assert.equal(typeof element.type, 'function', 'the registration renders the card component')
 	assert.equal(typeof element.props.remote, 'object', 'the card receives the Remote table')
 	assert.equal(typeof element.props.remote.settings.describe, 'function', 'and specifically the namespace table the section is read from')
 	assert.equal(typeof element.props.remote.settings.mutate, 'function', 'and the write path it saves through')
 	assert.equal(typeof element.props.remote.llm.listProviders, 'function')
+
+	// The sidebar icon and the page component are registered, not just claimed.
+	const iconElement = renders.get('sidebar.panellist')({ size: 22, active: true })
+	const icon = iconElement.type(iconElement.props)
+	assert.equal(icon.type, 'svg', 'the sidebar row gets an inline SVG icon')
+	assert.equal(icon.props.width, 22, 'at the edge the sidebar asked for')
+	assert.equal(icon.props['aria-hidden'], 'true', 'and stays decorative: the row text is the accessible name')
+	const pageElement = renders.get('main')()
+	assert.equal(typeof pageElement.type, 'function', 'the main slot renders the page component')
+	assert.equal(typeof pageElement.props.remote, 'object', 'which reads the same Remote table')
+	const page = pageElement.type(pageElement.props)
+	assert.equal(page.type, 'div', 'and draws the page shell')
+})
+
+test('the sidebar row label follows the UI language', () => {
+	// The list owner re-resolves a label thunk on every projection (row text,
+	// accessible name, collapsed tooltip), so the row follows the UI language
+	// without being re-registered. This half registers no locale namespace — the
+	// card draws its copy inline — so the language is read from the document.
+	const source = readFileSync(new URL('../client/client.js', import.meta.url), 'utf8')
+	let entry
+	new Function('window', source)({ __ModuleLoader__: { load: (value) => { entry = value } } })
+	const React = {
+		createElement: (type, props) => ({ type, props: props ?? {} }),
+		useState: (initial) => [initial, () => {}],
+		useEffect: () => {},
+		useCallback: (fn) => fn,
+		useMemo: (fn) => fn()
+	}
+	const module = entry.factory((name) => (name === 'react' ? React : (() => { throw new Error(name) })()))
+
+	let label
+	module.apply({
+		remote: { llm: {}, settings: {} },
+		slots: {
+			inject: (_name, callback) => callback(),
+			register: (options) => { if (options.name === 'sidebar.panellist') label = options.label },
+			entries: () => []
+		}
+	})
+	assert.equal(typeof label, 'function', 'the row label is a thunk, not a frozen string')
+
+	const previous = globalThis.document
+	try {
+		globalThis.document = { documentElement: { lang: 'zh-CN' } }
+		assert.equal(label(), '图片路由')
+		globalThis.document = { documentElement: { lang: 'en-US' } }
+		assert.equal(label(), 'Image Router')
+	} finally {
+		if (previous === undefined) delete globalThis.document
+		else globalThis.document = previous
+	}
+})
+
+test('the sidebar entry opens a page carrying the configuration form', async () => {
+	// The user-facing contract of the sidebar entry: click the row, get the editor.
+	// The page draws its own banner and embeds the same form as the bundle card, so
+	// the settings section keeps one editor rather than two that drift.
+	const source = readFileSync(new URL('../client/client.js', import.meta.url), 'utf8')
+	let entry
+	new Function('window', source)({ __ModuleLoader__: { load: (value) => { entry = value } } })
+
+	const hooks = []
+	let cursor = 0
+	const renderElement = (element) => (typeof element.type === 'function' ? element.type(element.props) : element)
+	const React = {
+		createElement: (type, props, ...children) => ({ type, props: props ?? {}, children: children.flat(Infinity).filter((child) => child !== null && child !== undefined && child !== false) }),
+		useState(initial) {
+			const index = cursor++
+			if (hooks.length <= index) hooks[index] = initial
+			return [hooks[index], (next) => { hooks[index] = typeof next === 'function' ? next(hooks[index]) : next }]
+		},
+		useEffect(fn) {
+			const index = cursor++
+			if (hooks.length <= index) {
+				hooks[index] = true
+				queueMicrotask(fn)
+			}
+		},
+		useCallback: (fn) => fn,
+		useMemo: (fn) => fn()
+	}
+	const module = entry.factory((name) => (name === 'react' ? React : (() => { throw new Error(name) })()))
+
+	let renderPanel
+	module.apply({
+		remote: {
+			settings: {
+				describe: async () => ({
+					ok: true,
+					value: {
+						namespaces: [
+							{ ns: 'image-router', value: { mode: 'switch', vision: { provider: 'qwen-token-plan-cn', model: 'qwen3.8-flash' } }, writable: true, revision: 5 },
+							// The picker prefers routes this deployment already declares, so the
+							// page test supplies one — otherwise the only option is the placeholder.
+							{ ns: 'llm-pi-ai', value: { providers: { 'qwen-token-plan-cn': { models: [{ id: 'qwen3.8-flash' }] } } }, writable: true, revision: 5 }
+						]
+					}
+				}),
+				mutate: async () => {}
+			},
+			llm: { listProviders: async () => ({ ok: true, value: [] }) }
+		},
+		slots: {
+			inject: (_name, callback) => callback(),
+			register: (options, render) => { if (options.name === 'main') renderPanel = render },
+			entries: () => []
+		}
+	})
+	assert.equal(typeof renderPanel, 'function', 'the main slot keeps the page registration')
+
+	const find = (node, predicate, out = []) => {
+		if (node === null || node === undefined || typeof node !== 'object') return out
+		if (Array.isArray(node)) {
+			for (const child of node) find(child, predicate, out)
+			return out
+		}
+		if (predicate(node)) out.push(node)
+		find(node.children, predicate, out)
+		return out
+	}
+	const textOf = (element) => (Array.isArray(element.children) ? element.children.join('') : String(element.children))
+
+	// A page pass mounts the panel and then the form it embeds, in that order, so
+	// the hook cursor follows the nesting React would use.
+	const mount = () => {
+		const page = renderElement(renderPanel())
+		const formElement = find(page, (node) => typeof node.type === 'function')[0]
+		const form = formElement === undefined ? undefined : renderElement(formElement)
+		return { page, form }
+	}
+	cursor = 0
+	mount()
+	await flush()
+	await flush()
+	cursor = 0
+	const { page, form } = mount()
+	assert.ok(form !== undefined, 'the page embeds a component (the shared form)')
+
+	const headings = find(page, (node) => node.type === 'h1')
+	assert.equal(headings.length, 1, 'the page draws one banner heading')
+	assert.equal(textOf(headings[0]), '图片路由')
+
+	// The card's own banner must not be repeated inside the page.
+	const cardHeadings = find(form, (node) => node.type === 'h4')
+	assert.equal(cardHeadings.length, 0, 'the panel view omits the card banner the page already draws')
+
+	const selects = find(form, (node) => node.type === 'select')
+	assert.ok(selects.length >= 2, 'the vision-source and model pickers draw')
+	const optionText = find(selects[1] ?? selects[0], (node) => node.type === 'option').map(textOf)
+	assert.ok(optionText.some((label) => label.includes('qwen-token-plan-cn / qwen3.8-flash')), 'the configured route is selectable')
+
+	const buttons = find(form, (node) => node.type === 'button').map(textOf)
+	assert.ok(buttons.includes('保存'), 'the editor keeps its save action')
+	const pill = find(page, (node) => node.type === 'span' && textOf(node) === 'dsh-image-router')
+	assert.equal(pill.length, 1, 'and the page names the package that owns it')
+})
+
+test('the action buttons paint their label on the brand fill', () => {
+	// The first real render of the panel showed the fill but not the text: the button
+	// inherited the page foreground, so "保存" was the theme's near-black primary on
+	// the same near-black fill. The shipped buttons pair that fill with
+	// `--dsw-alias-label-primary-foreground`, so the bundle must name the pair instead
+	// of inheriting — and never inherit onto a filled button again.
+	const source = readFileSync(new URL('../client/client.js', import.meta.url), 'utf8')
+	const start = source.indexOf('button: {')
+	const end = source.indexOf('status:', start)
+	assert.ok(start > 0 && end > start, 'the bundle keeps one button style block')
+	const block = source.slice(start, end)
+	assert.match(block, /background: 'var\(--dsw-alias-brand-primary/, 'the fill is the theme primary')
+	assert.match(block, /color: 'var\(--dsw-alias-label-primary-foreground/, 'and the label uses its foreground counterpart')
+	assert.equal(/color: 'inherit'/.test(block), false, 'never inherit the page foreground onto the primary fill')
 })
 
 test('the card draws a one-liner for the bundle page summary view', async () => {
@@ -1589,7 +1776,13 @@ test('the card draws a one-liner for the bundle page summary view', async () => 
 			},
 			llm: { listProviders: async () => ({ ok: true, value: [] }) }
 		},
-		slots: { inject: (_name, callback) => callback(), register: (_options, render) => { renderCard = render }, entries: () => [] }
+		slots: {
+			inject: (_name, callback) => callback(),
+			// The sidebar icon and the main panel register too now; keep the card's
+			// render only, so driving it here stays the tab's question.
+			register: (options, render) => { if (options.name === 'plugins.bundle.config') renderCard = render },
+			entries: () => []
+		}
 	})
 
 	// First pass mounts the card and queues its read; the second renders the state
@@ -1671,7 +1864,13 @@ test('the vision picker is populated from the configured routes', async () => {
 			},
 			llm: { listProviders: async () => ({ ok: true, value: [] }), discoverModels: async () => ({ ok: true, value: [] }) }
 		},
-		slots: { inject: (_n, callback) => callback(), register: (_o, render) => { renderCard = render }, entries: () => [] }
+		slots: {
+			inject: (_n, callback) => callback(),
+			// The sidebar icon and the main panel register too now; keep the card's
+			// render only, so driving it here stays the settings surface's question.
+			register: (options, render) => { if (options.name === 'plugins.bundle.config') renderCard = render },
+			entries: () => []
+		}
 	})
 
 	cursor = 0
@@ -1852,7 +2051,13 @@ test('the card never seeds its editor from a stored key', async () => {
 				set: async () => {}
 			})
 		},
-		slots: { inject: (_n, callback) => callback(), register: (_o, render) => { renderCard = render }, entries: () => [] }
+		slots: {
+			inject: (_n, callback) => callback(),
+			// The sidebar icon and the main panel register too now; keep the card's
+			// render only, so driving it here stays the settings surface's question.
+			register: (options, render) => { if (options.name === 'plugins.bundle.config') renderCard = render },
+			entries: () => []
+		}
 	})
 
 	const tree = typeof renderCard().type === 'function' ? renderCard().type(renderCard().props) : renderCard()
