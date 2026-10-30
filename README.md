@@ -1,7 +1,7 @@
 # dsh-image-router
 
 > [!IMPORTANT]
-> **当前版本 `0.6.0`，已发布到 npm。从 0.6.0 起它是「带左侧栏入口」的 DSH 插件：侧栏多一行「图片路由」，点开是独立配置页（0.2.1 的 `main` keyed 槽 + `sidebar.panellist` list 槽契约），同时保留原来的设置卡片。适配 DSH `0.1.5-rc.1+` 与 `0.2.x`：`0.1.5-rc.1`、`dsh-desktop 0.2.0-rc.2` 为真机验证线；`0.2.1-rc.3` 按 npm 发布包契约适配，侧栏入口 + 配置页已在 0.1.5 真机 GUI 渲染通过，0.2.1 桌面端外观待重启确认。**
+> **当前版本 `0.6.2`，已发布到 npm。从 0.6.0 起它是「带左侧栏入口」的 DSH 插件：侧栏多一行「图片路由」，点开是独立配置页（0.2.1 的 `main` keyed 槽 + `sidebar.panellist` list 槽契约），同时保留原来的设置卡片。适配 DSH `0.1.5-rc.1+` 与 `0.2.x`：`0.1.5-rc.1`、`dsh-desktop 0.2.0-rc.2` 为真机验证线；**`0.2.1-rc.5` 是当前桌面线** —— 0.6.2 修掉了 0.2.1 在桌面端最致命的一处不适配：设置节的命名空间是 **loader 条目 id**（bundle 插入的行是 `include:image-router`），而卡片此前只认真名 `image-router`，于是配置页永远是「没有找到设置节」。0.6.2 改为按条目 id 解析（真名 → 后缀 → schema 形状），并同时认领 0.2.1 新增的 `plugins.row.config` 行配置页、补上 `locale/*.json` 标题/描述与 `icon.svg`。另修掉一个更阴的 0.2.x 陷阱：卡片不再把没填的 `instruction` 写成空串（那会让宿主校验拒绝整个条目、插件自我禁用），宿主也把空串视为「用内置指令」—— 已中招的 profile 重启即恢复。0.6.2 同步支持桌面 `0.2.1-rc.5`：12 个契约包逐文件比对，除 CSS 类名哈希 / 构建路径 / 提交号外**零变更**，并在真实 rc.5 运行时上冷启动取证（`apply-entered` → `tool-registered` → `mounted`，boot manifest 里 `dsh-image-router` 与三条 `inject` 照旧）。**
 > 若你装到的是更早的 `0.1.0`，那是本插件的第一个（已废弃的）构建，会让「设置 → 模型」页加载失败 —— 用 `dsh plugin --profile web add dsh-image-router@latest` 直接装最新版即可。
 > **`0.4.4` 及更早的版本装不进 `0.2.x`**：插件的浏览器半边声明了 0.2.x 已删除的 `settingsScope` 服务，条目永久 pending，web boot 会以 `1 entry did not activate` 中止整次启动（详见〈0.2.x 与 0.1.x 的差异〉）。
 
@@ -45,26 +45,80 @@ qwen-token-plan-cn / qwen3.8-flash   ← 一次旁路调用（不改会话路由
 
 ## ⚡ 一分钟安装
 
-**前置**：已装好 DSH（`dsh web` 能正常跑），Node.js ≥ 20。
+**先选目标**：装到 **web 版** 还是 **桌面版**。两者是**不同的 profile、不同的 CLI**，插件得分别装；装错了就是“装完没反应”。
 
-**方式一：命令行一条**
+| 目标 | profile 目录 | 用哪个 CLI | 装完怎么生效 |
+|---|---|---|---|
+| **web 版**（`dsh web`） | `$DSH_HOME/profiles/web` | PATH 上的 `dsh`（`npm i -g @deepseek-ai/dsh`） | 重启 `dsh web`，浏览器硬刷新 |
+| **桌面版**（DeepSeek Harness App） | `$DSH_HOME/profiles/desktop` | **App 自带的那个**（`…\resources\runtime\cli\bin\dsh.cmd`） | **完全退出 App**（含托盘）再重新打开 |
+
+**前置**：Node.js ≥ 20；桌面版还需要 App 至少完整启动过一次（profile 由 App 初始化）。
+
+**方式一：命令行一条 —— 按目标二选一**
 
 ```sh
+# 有 web 版：装进 web profile，然后重启 dsh web
 dsh plugin --profile web add dsh-image-router && dsh web
 ```
 
-**就这一条。** `dsh plugin` 是 pnpm 的薄封装：它把包装进 profile，并**自动**把声明了 `dsh.bundle` 的依赖加进 `dsh.profile.bundles`（按已安装状态 reconcile），不需要手动编辑 `package.json`。卸载同理：`dsh plugin --profile web remove dsh-image-router`。
+```powershell
+# 有桌面版（Windows）：先完全退出 App，再用 App 自带的 CLI
+& "$env:LOCALAPPDATA\Programs\DeepSeek Harness\resources\runtime\cli\bin\dsh.cmd" plugin --profile desktop add dsh-image-router
+```
+
+macOS 是 `/Applications/DeepSeek Harness.app/Contents/Resources/runtime/cli/bin/dsh`，Linux 见下方〈桌面版装在哪〉。
+
+**方式一·五：用仓库里的安装器（自动挑 CLI / profile）** —— 仅**源码克隆**里有（npm 包不含 `tools/`），但正因如此它知道两个目标各自该用哪个 CLI：
+
+```sh
+node tools/install.mjs desktop          # 装桌面版（自动找 App 内置 CLI，检查 App 是否已退出）
+node tools/install.mjs web              # 装 web 版（用 PATH 上的 dsh）
+node tools/install.mjs desktop --source # 从本地克隆装（file:<repo>）
+node tools/install.mjs desktop --dry-run # 只预检 + 打印将执行的命令，不写任何东西
+# 等价：pnpm run install:desktop / pnpm run install:web
+```
+
+它会先打印 `target / profile / cli / spec / current` 再动手，并在桌面版上拒绝在 App 运行时写入（`--force` 可跳过）。`--home` 会同时作为 `DSH_HOME` 传给 CLI —— 否则 CLI 会按自己的默认家目录装到别处去（这个坑实测踩过一次）。
+
+**就这一条。** `dsh plugin` 是 pnpm 的薄封装：它把包装进 profile，并**自动**把声明了 `dsh.bundle` 的依赖加进 `dsh.profile.bundles`（按已安装状态 reconcile），不需要手动编辑 `package.json`。卸载同理，把 `add` 换成 `remove`，`--profile` 换成对应目标。
 
 > 不想走 npm？把 `dsh-image-router` 换成 `github:zhiwuli0228/dsh-image-router` 即为等价形态（前沿代码、未经 registry 校验）。
 
-**方式二：让 DSH 自己装** —— 把下面这段发给任意一个 DSH 会话：
+<details>
+<summary><b>桌面版装在哪 / 为什么不能用 PATH 上的 dsh</b></summary>
+
+桌面 App 不复用 npm 全局安装的 `dsh`：它把整套运行时（Node + pnpm + harness）放在安装目录里，CLI 是
+
+```
+<App>\resources\runtime\cli\bin\dsh.cmd          # Windows
+/Applications/DeepSeek Harness.app/Contents/Resources/runtime/cli/bin/dsh   # macOS
+```
+
+两个版本可能并不相同（例如本机 npm 全局是 `0.1.5-rc.1`，App 内是 `0.2.1-rc.3`）。用错 CLI 的后果：
+
+- 用旧 CLI 装桌面 profile → 写进去的插件 bundle 由旧运行时解释，App 读不到 / 读错；
+- 用任何 CLI 在 **App 运行时**写 desktop profile → `dsh plugin` 自己就会拒绝：`Open DeepSeek Harness Desktop once to initialize its profile, then fully quit it before running dsh plugin --profile desktop.`（它靠 `package.json` 的文件锁保护）；
+- 桌面 profile 只能由 App 创建，CLI **不会**替它初始化。
+
+确认自己装到了哪个 profile：
+
+```sh
+& "$env:LOCALAPPDATA\Programs\DeepSeek Harness\resources\runtime\cli\bin\dsh.cmd" plugin --profile desktop list
+```
+
+输出里的路径就是真正生效的 profile（本机为 `C:\Users\<you>\.dsh\profiles\desktop`）。
+
+</details>
+
+**方式二：让 DSH 自己装** —— 把下面这段发给任意一个 DSH 会话（把第一句的目标改成 `web` 或 `desktop`）：
 
 ```text
-帮我安装 dsh-image-router 图片旁路识别插件（DSH 插件，让纯文本模型也能看图），步骤：
-1. 执行 dsh plugin --profile web add dsh-image-router
-2. 确认 dsh-image-router 已出现在 $DSH_HOME/profiles/web/package.json 的 dsh.profile.bundles 里
-3. 提醒我重启 dsh web
-4. 重启后告诉我：左侧栏多出来的「图片路由」行点开是什么样，视觉模型那栏怎么填
+帮我安装 dsh-image-router 图片旁路识别插件（DSH 插件，让纯文本模型也能看图），目标：<web 或 桌面版>，步骤：
+1. 先确认目标：web 版用 PATH 上的 dsh；桌面版用 App 自带的 CLI（Windows：%LOCALAPPDATA%\Programs\DeepSeek Harness\resources\runtime\cli\bin\dsh.cmd），且桌面 App 要先完整启动过一次、再完全退出
+2. web：执行 dsh plugin --profile web add dsh-image-router；桌面版：执行上面那个 dsh.cmd 的 plugin --profile desktop add dsh-image-router
+3. 确认 dsh-image-router 已出现在对应 profile（profiles/web 或 profiles/desktop）package.json 的 dsh.profile.bundles 里
+4. 提醒我：web 重启 dsh web；桌面版完全退出并重新打开 App
+5. 之后告诉我：左侧栏多出来的「图片路由」行点开是什么样，视觉模型那栏怎么填
 遇到报错先查 https://github.com/zhiwuli0228/dsh-image-router README 的常见问题。
 ```
 
@@ -81,8 +135,13 @@ dsh plugin --profile web add dsh-image-router && dsh web
 <summary><b>更新</b></summary>
 
 ```sh
-# 装/升到最新版
+# web 版：装/升到最新版
 dsh plugin --profile web add dsh-image-router@latest
+```
+
+```powershell
+# 桌面版：先完全退出 App，再用 App 自带的 CLI（或 node tools/install.mjs desktop）
+& "$env:LOCALAPPDATA\Programs\DeepSeek Harness\resources\runtime\cli\bin\dsh.cmd" plugin --profile desktop add dsh-image-router@latest
 ```
 
 **若它打印 `Already up to date` 却仍是旧版**：pnpm 11 的**发布年龄门槛**（`minimumReleaseAge`）把「刚发布不久」的版本排除在版本解析之外。**全新安装不受影响**（pnpm 会把该版本自动加进排除项，实测发布 20 分钟后 `@latest` 即可装到），但**升级已有依赖**时会把新版本滤掉、解析回旧版 —— 看起来像更新失败，其实是策略挡的。这时显式写出版本号即可，pnpm 会打印 `Added 1 entry to minimumReleaseAgeExclude` 并立即安装：
@@ -91,7 +150,7 @@ dsh plugin --profile web add dsh-image-router@latest
 dsh plugin --profile web add dsh-image-router@<版本号>
 ```
 
-改完**硬刷新浏览器**（Ctrl/Cmd+Shift+R）。配置项的改动不需要重启（保存后下一次判定即生效）；插件**代码**的改动需要重启 `dsh web`。
+改完**硬刷新浏览器**（Ctrl/Cmd+Shift+R）。配置项的改动不需要重启（保存后下一次判定即生效）；插件**代码**的改动需要重启 `dsh web`。桌面版同理：配置改动即时生效，**客户端代码**（`client/client.js`、`locale/`、`icon.svg`）变化要**完全退出并重开 App** —— 它没有浏览器硬刷新那一步。
 
 </details>
 
@@ -107,7 +166,8 @@ dsh plugin --profile web add dsh-image-router@<版本号>
 | 分析很慢（半分钟以上） | 多半是推理模型把 token 预算花在思考上。插件会自动用更大预算重试一次（审计记 `digest-retry`），但你可以把卡片里的 `maxTokens` 从 `900` 直接改成 `4000` 省掉那一轮；或换非推理的视觉模型。 |
 | 分析是空的，收到的是图片占位 | 看审计里的 `digest-empty` / `digest-failed` 行 —— 现在会带上实际收到的 chunk 类型与 finish 原因，据此判断是模型没输出、预算被思考吃光、还是路由配置问题。 |
 | 保存端点后仍走别的模型 | 升级到 `0.4.0+`。旧版本会让 profile 里的默认路由遮蔽你保存的端点。 |
-| 想彻底移除 | `dsh plugin --profile web remove dsh-image-router`（包会从依赖与 bundles 一起消失）。它写下的派生路由 `Image Router Vision` 与凭据会保留，要清就在 **设置 → 模型** 里删掉那条路由。 |
+| 装完“没反应”，`dsh plugin --profile desktop list` 里也看不到 | 十有八九装进了另一个 profile。桌面版必须用 **App 自带**的 CLI 且 `--profile desktop`（见〈一分钟安装〉的表格）；PATH 上的 `dsh` 版本可能更旧，装到的是 `profiles/web`。 |
+| 想彻底移除 | web：`dsh plugin --profile web remove dsh-image-router`；桌面版：完全退出 App 后用 App 自带的 CLI `plugin --profile desktop remove dsh-image-router`（包会从依赖与 bundles 一起消失）。它写下的派生路由 `Image Router Vision` 与凭据会保留，要清就在 **设置 → 模型** 里删掉那条路由。 |
 
 </details>
 
@@ -115,17 +175,27 @@ dsh plugin --profile web add dsh-image-router@<版本号>
 <summary><b>从源码安装 / 开发</b></summary>
 
 ```sh
-# 1. 装进 profile（file: 指向你的克隆目录）
+# web 版：装进 web profile（file: 指向你的克隆目录）
 dsh plugin --profile web add file:E:\path\to\dsh-image-router
 
 # 2. 重启 dsh web
 dsh web
 ```
 
-零安装也可以：不装依赖，直接按路径挂载（见 `examples/cordis.patch.yml`）：
+```powershell
+# 桌面版：先完全退出 App，再用 App 自带的 CLI
+& "$env:LOCALAPPDATA\Programs\DeepSeek Harness\resources\runtime\cli\bin\dsh.cmd" plugin --profile desktop add file:E:\path\to\dsh-image-router
+# 然后重新打开 App
+```
+
+两条等价的一步版本：`node tools/install.mjs web --source` / `node tools/install.mjs desktop --source`。
+
+> **改完代码怎么让它生效**：`file:` 依赖在 profile 里是**拷贝**，不是软链 —— 改完源码必须重跑一次上面的 `add`（或把改动的文件按原相对路径覆盖进 `<profile>\node_modules\dsh-image-router\`），再重启。宿主一侧（`lib/`）重启即生效；客户端一侧（`client/client.js`、`locale/`、`icon.svg`）桌面版必须**完全退出 App 再打开**。
+
+零安装也可以：不装依赖，直接按路径挂载（见 `examples/cordis.patch.yml`），两个目标只是 profile 目录不同：
 
 ```yaml
-# $DSH_HOME/profiles/web/cordis.patch.yml
+# $DSH_HOME/profiles/web/cordis.patch.yml      ← 桌面版换成 profiles/desktop
 - insert:
     - id: image-router
       name: '<repo>\lib\index.js'      # 绝对路径或 ./-相对路径都接受
@@ -151,7 +221,7 @@ profile 补丁层有 live reload（`patchReload: live`），实测配置改动�
 - **🧩 不自己实现协议**：线协议、模型发现、图片投影、重试全部交给 `@deepseek-ai/dsh-llm-pi-ai`，插件只负责把卡片上的字段写成 DSH 的配置。
 - **🛡️ 失败即放行**：视觉调用失败（配额 / 超时 / 报错）时不替换图片，把原请求交给原路径，让它给出**真实的**错误，而不是被插件掩盖。任何插件内部异常都只写审计 + 一条 warning。
 - **📝 审计文件**：挂载、每次分析、用了哪条路由、重试、失败原因都记一行 —— 「我配的端点到底生效了吗」有一个可读的答案。
-- **🧪 74 个单测 + 全平台 CI**：Ubuntu + Windows × Node 20/22/24，外加一份打包契约（含「侧栏入口与主面板必须同 id」的断言）。
+- **🧪 92 个单测 + 全平台 CI**：Ubuntu + Windows × Node 20/22/24，外加一份打包契约（含「侧栏入口与主面板必须同 id」的断言、以及「手动安装必须点名 desktop / web」的断言）。
 
 ## 🧭 左侧栏入口
 
@@ -213,7 +283,7 @@ digest session=<id> vision=image-router-vision/qwen3.8-max images=1 chars=408 na
 |---|---|---|
 | `mode` | `digest` | `digest`＝旁路分析并替换文字（不改模型）；`switch`＝图片轮次临时借用视觉路由，之后归还 |
 | `vision` | 必填（二选一） | **①** `provider` / `model` / 可选 `reasoningEffort`；**②** `endpoint: { baseURL, model, api?, name?, apiKey?, apiKeyEnv?, images? }` —— 由宿主翻译成上游 `llm-pi-ai` 的一条路由 |
-| `instruction` | 内置（提取文字 + 描述画面） | 给视觉模型的指令 |
+| `instruction` | 内置（提取文字 + 描述画面） | 给视觉模型的指令。**留空 = 用内置指令**（0.6.2 起卡片留空写的是 `unset`，而不是 `instruction: ""`）—— 详见下方「空 instruction 会把插件自己关掉」 |
 | `maxTokens` | `900` | 分析结果上限。**在 `openai-completions` 这类协议上，这个预算与模型自己的思考 token 共享**（pi-ai 源码原文：*reasoning and the answer share `max_tokens` here, so an uncapped reasoning phase can consume the whole response and leave no answer*）。推理模型常把 900 全花在思考上、正文一字不出 —— 此时插件会**自动用更大预算重试一次**（`max(4×, 4096)`，上限 32768），审计记 `digest-retry` / `digest-retry-ok` |
 | `timeoutMs` | `120000` | 单次旁路调用的超时 |
 | `label` | `true` | 在替换文本前加 `[图片分析 · provider/model]` 标记 |
@@ -233,6 +303,20 @@ digest session=<id> vision=image-router-vision/qwen3.8-max images=1 chars=408 na
 | 模型选择器 / `[model changed]` 提示 | 不出现 | 会出现 |
 
 `auto` / `sticky` 是旧的模式名，仍被接受并映射到 `switch`。
+
+### 空 `instruction` 会把插件自己关掉（0.2.x 陷阱，0.6.2 修复）
+
+0.2.x 上「条目自己的 `Config` 就是设置节」，所以卡片保存时写回的每个键都是**真实配置值**。旧版卡片每次保存都会把 `instruction` 一并写回，而这个字段没填过时读到的就是空串 —— 于是 profile 补丁里凭空多出：
+
+```yaml
+- id: image-router
+  config:
+    instruction: ""
+```
+
+宿主侧校验把它当非法值（`instruction must be a non-empty string`），`apply` 在注册任何东西**之前**就返回：插件装好了、条目 `active`、工具却不存在，看上去就是「怎么弄都不生效」，而证据只有日志里一行 warn（审计文件里是 `apply-disabled problems=…`）。
+
+0.6.2 两头都改了：卡片留空改发 `unset`（不再写空串，且顺手清掉旧值），宿主把空串/纯空白当作「用内置指令」。已经中招的 profile **不需要手改**，重启后即可恢复；再点一次保存会把那个空串删掉。
 
 </details>
 
@@ -285,7 +369,7 @@ session=<id> error=<消息> at=<栈帧>                                         
 |---|---|
 | DSH `0.1.5-rc.1+`（CLI：`dsh web` / headless / sdk / acp） | 真机验证。设置节走 `settings.register`，卡片挂在 `settings.plugin.item`；侧栏入口（若该版本声明 `sidebar.panellist` / `main`）同一套代码。 |
 | DSH `0.2.x`（`dsh-desktop 0.2.0-rc.2`） | 真机验证。设置节＝条目自己的 `Config`，卡片挂在 `plugins.bundle.config`。 |
-| DSH `0.2.1`（`dsh-desktop 0.2.1-rc.3` 内嵌运行时） | 按 npm 发布的 `0.2.1-rc.3` 包契约适配：`main` keyed 槽（按 `entryKey` 分发）＋ `sidebar.panellist` list 槽（`id`/`order`/`label` 元数据）＋ 原 `plugins.bundle.config` 卡片。单测与打包契约覆盖，同一套注册代码已在 0.1.5 真机 GUI 渲染通过；**0.2.1 桌面端外观待重启 GUI 确认**。 |
+| DSH `0.2.1`（`dsh-desktop 0.2.1-rc.3` → **`0.2.1-rc.5`** 内嵌运行时） | 两条桌面线都真机取证：侧栏行、`main` 页、`plugins.bundle.config` 卡片三者都注册且 `active`（`Slots.listSubTree` 的 `occupants` 可读），rc.5 上还额外跑了一次完整冷启动。0.6.2 起另加两件当时缺的东西：① 设置节按 **loader 条目 id** 解析（该运行时是 `include:image-router`，不是 `image-router`），② 认领 0.2.1 新增的 `plugins.row.config` 行配置页（`<包名>#<补丁里声明的行 id>`），宿主递来的 `form` 直接写、不再猜命名空间。**再重启一次桌面 App 即可看到修复后的配置页**（装在 profile 里的副本是拷贝，不是软链）。 |
 | Node.js | ≥ 20（CI 覆盖 20 / 22 / 24） |
 | 平台 | Windows / Linux / macOS |
 | profile | `web` / `desktop` 验证最充分；headless / sdk / acp 也能激活（`sessionController` 缺席时插件不包装，只注册工具） |
@@ -300,7 +384,9 @@ session=<id> error=<消息> at=<栈帧>                                         
 | 可写字段 | 无限制 | 只有 schema 里标了 `volatile` 的路径可写（插件标的是顶层字段，`vision` 覆盖其子树） |
 | `volatile` 字段怎么读 | 标记对解析无影响，值就是普通值 | **标记会改变解析**：该字段解析成 cosmokit 实时取值器（`{ get(), [Symbol(cosmokit.volatile.write)] }`），`~standard.validate`（loader 交给 `apply` 的那份）也一样。插件因此先把配置解包（`plainConfig`）再判读；官方 pi-ai 也是 `config.providers.get()` 这么读的 |
 | 配置落在哪 | `$DSH_HOME/settings.yaml` 的节（0.2.x 启动时会被导入并改名 `.imported`） | 该 profile 的补丁层（`cordis.patch.yml`） |
-| 卡片挂在哪 | `settings.plugin.item`，按设置命名空间 key | `plugins.bundle.config`，按包名 key（在插件页上该 bundle 的页里） |
+| 卡片挂在哪 | `settings.plugin.item`，按设置命名空间 key | `plugins.bundle.config`，按包名 key（在插件页上该 bundle 的页里）；0.2.1 起另有 `plugins.row.config`，key 是 `<包名>#<补丁里声明的行 id>`（`dsh-image-router#image-router`），行上多出「配置」入口 |
+| 设置命名空间长什么样 | 插件自己 `register('image-router', …)`，就是这一个名字 | **loader 条目 id**：bundle 补丁插入的行被组合成 `include:<行 id>`（`include:image-router`），`dsh-settings` 用 `entry.options.id` 当 `ns`。0.6.2 起卡片按条目 id 解析：真名 → `<分隔符><真名>` 后缀 → schema 形状（含 `vision`/`maxTokens`/`timeoutMs`），写回同一个 id |
+| 页面表单谁给 | 没有，卡片自己读写 `settingsScope` | 0.2.1 的配置槽会把条目自己的 `form`（`{ state, mutate }`）作为 prop 递进来；卡片优先用它（不再需要命名空间），没有 `form` 时才回落到 `remote.settings` |
 | 侧栏入口 | 两侧都有 `sidebar.panellist`（list 槽）与 `main`（keyed 槽）；行 id 即主面板 key | 同左；布局按当前面板 id 以 `entryKey` 分发 `main` |
 | 浏览器侧绑定 | `settingsScope` 服务 + `scope.set(field, value)` | 没有；一律走 `remote.settings.describe()` / `mutate(ns, ops, revision)` |
 | 密钥 | 卡片写进节，Host 随即取走存进凭据库 | 同上，并且 Host 存完凭据后会**把明文从配置里 `unset`**（否则它会留在 profile 补丁里） |
@@ -398,9 +484,13 @@ tools/*-probe.mjs        五个运行时探针（digest / tool / switch 序列 /
 
 | 环节 | 结论 |
 |---|---|
-| 单测 | ✅ 74 个用例 |
+| 单测 | ✅ 92 个用例（77 路由/宿主/客户端 + 15 安装器） |
+| **桌面 `0.2.1-rc.5` 同步（0.6.2）** | ✅ ① **契约比对**：把 npm 上 12 个 rc.5 包（`dsh` / `dsh-settings` / `dsh-plugin-manager` / `dsh-client-ui-settings` / `dsh-client-ui-layout` / `dsh-client-ui-sidebar` / `dsh-client-modules` / `dsh-app-boot` / `dsh-package-manifest` / `dsh-web-app` / `dsh-api-remotes` / `dsh-llm-pi-ai`）与 `dsh-desktop 0.2.1-rc.3` 的 `app.asar` 逐文件比对：104 个文件字节相同，差异只有 `package.json` 版本号、两个客户端 bundle 的 CSS 类名哈希/构建路径、以及 `dsh-client-modules` 里的提交号常量。② **真机冷启动**：用 rc.5 在独立 `DSH_HOME` 起 `dsh web --port 0 --no-open`，审计依次写 `apply-entered mode=digest … schema=schemastery`、`tool-registered name=describe_image`、`vision-oracle-registered ns=image-router`、`mounted …`；页面 boot manifest 里 `dsh-image-router` 的 `inject` 仍是那三条（`dsh-api-remotes` / `dsh-client-ui-layout` / `dsh-client-ui-sidebar`）。 |
+| **手动安装按目标（desktop / web）** | ✅ 用 `dsh-desktop 0.2.1-rc.3` **自带**的 CLI 真机取证：`…\resources\runtime\cli\bin\dsh.cmd --version` → `0.2.1-rc.3`（PATH 上的是 `0.1.5-rc.1`，两者不同），`plugin --profile desktop list` 读出真实 profile `C:\Users\…\.dsh\profiles\desktop` 与 `dsh-image-router@file:…`；安装器在一个**全新临时 `DSH_HOME`** 上真装了一次 web profile：profile 被初始化、`dependencies` 写入 `file:` 规格、`dsh.profile.bundles` 自动补上 `dsh-image-router`，退出码 0（同时实测出两个必须修的坑：`.cmd` 直接 `spawnSync` 是 `EINVAL`、`--home` 必须转成子进程的 `DSH_HOME`） |
 | **0.2.x 客户端契约（无 `settingsScope`）** | ✅ 真机（离线运行时）验证：把 `dsh-desktop 0.2.0-rc.2` 内嵌的运行时从 `app.asar` 解出、以独立 `DSH_HOME` 起 `dsh-web`，插件在 0.2.0 上完成挂载（审计见下），boot manifest 里列出 `dsh-image-router` 客户端条目；渲染器那一侧（卡片外观）仍需在 GUI 里看一眼 |
-| **0.2.1 侧栏入口契约** | ✅ 对 npm 发布的 `0.2.1-rc.3` 包取证：`dsh-client-ui-layout` 的 `main` 是根作用域 keyed 槽、按 `entryKey`（当前面板 id）分发；`dsh-client-ui-sidebar` 渲染 `sidebar.panellist` list 行并解析 `id`/`order`/`label`，点击时 `ctx.layout.selectPanel(id)`；官方 `plugin-manager` 即以此形态注册侧栏行 + 主面板。本插件的单测断言：四个槽位各注册一次、行与页共用 `image-router`、行标签跟随 `document.lang`、图标为内联 SVG、面板视图渲染同一张表单且不再画卡片标题。同一套注册代码已在 0.1.5 真机 GUI 渲染通过（见下一行）；**0.2.1 桌面端页面外观仍需重启确认** —— 本机只装了桌面 App，其 asar 内嵌运行时无法脱离 Electron 单独起 web |
+| **0.2.1 设置节命名空间（0.6.2 修复）** | ✅ 于 `dsh-desktop 0.2.1-rc.3` 运行时取证：`Config.listConfigs` 把本插件列为 `{"id":"include:image-router","patchId":"image-router"}`，`dsh-settings` 的 `describe()` 以 `entry.options.id` 为 `ns`，宿主日志同时反复记 `settings-unsupported register=undefined`（0.2.x 没有 `settings.register`）。因此旧版把 `ns` 写死成 `image-router` 时，桌面端永远匹配不到设置节。0.6.2 改为解析 + 缓存到 Remote 表上（读到的 id 同时用于写回），并优先使用宿主递来的 `form`；两条路径各有单测（`include:` 前缀解析 + 写回、`form` 优先且不经 `remote.settings.mutate`） |
+| **空 `instruction` 不再自我禁用（0.6.2 修复）** | ✅ 两条路径都有单测：宿主 `normalizeConfig` 把 `instruction: ""` / 纯空白当作「未设置」并回落内置指令（`apply` 照常注册 `describe_image`，无 warn）；卡片保存时对空白指令发 `unset(['instruction'])` 而不是 `set` 空串（Remote 路径与宿主 `form` 路径各一条）。现场证据来自用户机器的 `cordis.patch.yml`：`instruction: ""` 被写进条目配置后，`apply` 直接 `apply-disabled problems=instruction must be a non-empty string`，插件因此永远不生效 |
+| **0.2.1 侧栏入口契约** | ✅ 对 npm 发布的 `0.2.1-rc.3` 包取证：`dsh-client-ui-layout` 的 `main` 是根作用域 keyed 槽、按 `entryKey`（当前面板 id）分发；`dsh-client-ui-sidebar` 渲染 `sidebar.panellist` list 行并解析 `id`/`order`/`label`，点击时 `ctx.layout.selectPanel(id)`；官方 `plugin-manager` 即以此形态注册侧栏行 + 主面板。0.2.1 真机槽位查询：`sidebar.panellist` 占用者含 `{"registrant":"image-router","id":"image-router","order":40,"active":true}`、`plugins.bundle.config` 含 `{"key":"dsh-image-router","active":true}`、`main` 的 key 域含 `image-router` —— 注册与激活都成立，唯一断掉的是设置节查找。本插件的单测断言：五个槽位各注册一次、行与页共用 `image-router`、行标签跟随 `document.lang`、图标为内联 SVG、面板视图渲染同一张表单且不再画卡片标题 |
 | **侧栏入口真机渲染（0.1.5 线）** | ✅ 独立 `DSH_HOME` + `dsh --profile verify` + 本机 Edge（Playwright 驱动）真机渲染：侧栏出现「图片路由」行（含内联 SVG 图标），点击后中间栏切换到配置页（`<h1>图片路由</h1>`、`保存`/`还原`、视觉来源表单）；页面内 `window.__imageRouter.registered = ["main","sidebar.panellist","settings.plugin.item"]`、`ledger = { main: 1, "sidebar.panellist": 1 }`、`slotHasMine: true`，无 console / page 错误。这次渲染还抓到一个单测看不见的缺陷：按钮 `color: inherit` 让「保存」在黑底上不可见 —— 已改为 `label-primary-foreground` 并补了断言 |
 | **0.2.x 宿主半边激活** | ✅ 真实 0.2.0 运行时冷启动审计：`apply-entered … schema=schemastery`、`tool-registered name=describe_image`、`settings-unsupported register=undefined`、`vision-oracle-registered ns=image-router`、`endpoint-services settings=yes credentials=yes`、`mounted mode=digest …` |
 | **0.2.x 的 `volatile` 实时取值器** | ✅ 实测：0.2.0 侧 `Config({mode:'digest'}).mode` 是 `{ get(), [Symbol(cosmokit.volatile.write)] }`，`.get()` 得值；0.1.5 侧（schemastery 3.18.2）同一标记对解析无影响 —— 第一版实现漏了解包，正是靠这次冷启动（审计文件为空 = 配置在校验阶段就被拒）才发现的 |

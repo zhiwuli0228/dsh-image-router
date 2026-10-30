@@ -74,28 +74,139 @@ window.__ModuleLoader__.load({
 		 * nothing can reach).
 		 */
 		const PANEL_ID = 'image-router'
+		/**
+		 * The row id the bundle's patch declares (`cordis.patch.yml`).
+		 *
+		 * `plugins.row.config` keys a cell by `` `${package}#${row id}` `` over this
+		 * exact spelling, while the Loader composes the ENTRY id as
+		 * `include:<row id>` — the two are different strings on purpose, and the
+		 * settings namespace is the latter.
+		 */
+		const ROW_ID = 'image-router'
 		/** Row order among the shipped global panels; ties keep registration order. */
 		const PANEL_ORDER = 40
 		/** Section fields the card edits; each is written as its own path op. */
 		const FIELDS = ['mode', 'vision', 'instruction', 'maxTokens', 'timeoutMs', 'label', 'endpoint']
 
 		/**
-		 * The section, read and written through the Remote settings table.
+		 * The section, read and written through one seam.
 		 *
-		 * `describe()` answers every configurable namespace with one view; the view
-		 * carries the resolved `value`, the namespace `revision` and whether writes
-		 * are accepted. `mutate(ns, ops, revision)` applies path-addressed ops — leaf
-		 * paths, because a 0.2.x deployment accepts a write only when that exact path
-		 * is volatile in the entry's own Config schema, and the plugin declares its
-		 * top-level fields (never both an ancestor and its child) volatile.
+		 * Two sources, tried in this order:
+		 *
+		 *   1. **The Host-owned page form** (`props.form`): the 0.2.1 browser
+		 *      surface hands a configuration slot `{ state, mutate }` for the entry
+		 *      whose page it owns, so such a deployment needs no namespace at all —
+		 *      the Host already resolved the entry. Reading `state` also follows
+		 *      the shared settings mirror, so a page opened from the Plugins page
+		 *      sees edits pushed by anything else.
+		 *   2. **The Remote settings table**: `describe()` answers every
+		 *      configurable namespace with one view carrying the resolved `value`,
+		 *      the `revision` and whether writes are accepted; `mutate(ns, ops,
+		 *      revision)` applies path-addressed ops — leaf paths, because a 0.2.x
+		 *      deployment accepts a write only where that exact path is volatile in
+		 *      the entry's own Config schema, and the plugin declares its top-level
+		 *      fields (never both an ancestor and its child) volatile.
+		 *
+		 * **Namespace identity is the Loader ENTRY ID**, not the id this plugin
+		 * writes in its own patch: a row inserted by a bundle layer is composed as
+		 * `include:<patch id>` (dsh-plugin-manager compares
+		 * `` `include:${row.id}` `` against the owner entry id), and the settings
+		 * service keys its forms by `entry.options.id`. Matching the bare
+		 * `image-router` therefore found nothing on dsh-desktop 0.2.1 — the card
+		 * reported "没有找到 image-router 这个设置节" while the same build worked on
+		 * a 0.1.x profile, whose entry id carries no prefix. The lookup below
+		 * accepts the exact id, then any `<separator><id>` suffix, then the one
+		 * namespace whose schema declares this plugin's fields.
 		 */
-		function namespaceClient(remote) {
+		const NAMESPACE_SUFFIXES = [':', '#', '/', '='].map((separator) => separator + NAMESPACE)
+		/** Fields every image-router section declares; used to IDENTIFY a section, never to validate a write. */
+		const SECTION_MARKERS = ['vision', 'maxTokens', 'timeoutMs']
+
+		/** The namespace one `describe()` view carries, or undefined for anything else. */
+		function viewNamespace(view) {
+			return view !== null && typeof view === 'object' && typeof view.ns === 'string' ? view.ns : undefined
+		}
+
+		/**
+		 * Pick this plugin's section out of a `describe()` answer.
+		 *
+		 * Exact id first: a 0.1.x profile, or a 0.2.x entry whose id the deployment
+		 * sets itself, keeps the plain spelling. Then a suffixed id, which is what a
+		 * bundle-inserted row (`include:image-router`) and a grouped entry
+		 * (`group:image-router`) look like. The schema test runs last and only when
+		 * no id matched: a namespace that already identified itself by id must win.
+		 */
+		function sectionView(views) {
+			const usable = Array.isArray(views) ? views.filter((view) => viewNamespace(view) !== undefined) : []
+			const byId = usable.find((view) => view.ns === NAMESPACE)
+			if (byId !== undefined) return byId
+			const bySuffix = usable.find((view) => NAMESPACE_SUFFIXES.some((suffix) => view.ns.endsWith(suffix)))
+			if (bySuffix !== undefined) return bySuffix
+			// A serialized JSON Schema (`schema.properties`) and a schemastery-ish
+			// view (`schema.dict`) both declare the fields this card edits.
+			return usable.find((view) => {
+				const schema = view.schema
+				const properties = schema !== null && typeof schema === 'object' ? (schema.properties ?? schema.dict) : undefined
+				if (properties === null || typeof properties !== 'object') return false
+				return SECTION_MARKERS.every((field) => Object.prototype.hasOwnProperty.call(properties, field))
+			})
+		}
+
+		/** The namespaces a failed lookup reports back, so the next report is actionable. */
+		function namespaceNames(views) {
+			return Array.isArray(views)
+				? views.map((view) => viewNamespace(view)).filter((ns) => ns !== undefined).slice(0, 12)
+				: []
+		}
+
+		/**
+		 * Namespace per Remote table, remembered ACROSS client instances.
+		 *
+		 * A card re-creates its client whenever the hooks re-run, so a resolution
+		 * cached on the instance would be lost between the read that found the
+		 * section and the write that follows it — which is exactly how a save ended
+		 * up naming the bare id again on 0.2.1.
+		 */
+		const RESOLVED_SECTIONS = new WeakMap()
+
+		/**
+		 * @param remote - the Remote table, absent on a deployment without api-remotes.
+		 * @param readForm - accessor for the Host-owned page form, read at call time
+		 *   so a re-rendered props object never forces a new client (and with it a
+		 *   reload loop).
+		 */
+		function namespaceClient(remote, readForm) {
+			/** The form this call may use, or undefined when the page owns no form. */
+			const ownedForm = () => {
+				const form = readForm === undefined ? undefined : readForm()
+				return form !== undefined && form !== null && form.state !== undefined ? form : undefined
+			}
+
 			return {
 				async read() {
+					const owned = ownedForm()
+					if (owned !== undefined) {
+						const state = owned.state
+						return {
+							value: routeOf(state?.value),
+							writable: state?.writable !== false,
+							revision: state?.revision
+						}
+					}
+					if (remote === undefined) return undefined
 					const response = await remote.settings.describe()
 					const views = response !== null && typeof response === 'object' && response.ok === true ? response.value?.namespaces : undefined
-					const view = Array.isArray(views) ? views.find((candidate) => candidate !== null && typeof candidate === 'object' && candidate.ns === NAMESPACE) : undefined
-					if (view === undefined) return undefined
+					const view = sectionView(views)
+					if (view === undefined) {
+						const available = namespaceNames(views)
+						const error = new Error('没有找到本插件的设置节（entry ' + NAMESPACE + '）。当前 Host 提供的命名空间：' + (available.length === 0 ? '（空）' : available.join('、')))
+						error.code = 'image-router/section-missing'
+						error.namespaces = available
+						throw error
+					}
+					// Remembered on the Remote table, not on this client: a later render
+					// builds a new client and still has to write to this namespace.
+					RESOLVED_SECTIONS.set(remote, view.ns)
 					return {
 						value: routeOf(view.value),
 						// A view that does not state `writable` is treated as writable: the
@@ -106,7 +217,13 @@ window.__ModuleLoader__.load({
 					}
 				},
 				async write(ops, revision) {
-					await remote.settings.mutate(NAMESPACE, ops, revision)
+					const owned = ownedForm()
+					if (owned !== undefined) {
+						await owned.mutate(ops, revision)
+						return
+					}
+					if (remote === undefined) throw new Error('这个部署没有 API 远端服务，无法写入配置。')
+					await remote.settings.mutate(RESOLVED_SECTIONS.get(remote) ?? NAMESPACE, ops, revision)
 				}
 			}
 		}
@@ -371,17 +488,30 @@ window.__ModuleLoader__.load({
 		 */
 		function Card(props) {
 			const remote = props.remote
-			const client = React.useMemo(() => (remote === undefined ? undefined : namespaceClient(remote)), [remote])
+			// The Host-owned page form travels through a ref: the owner rebuilds this
+			// props object on every render, and a client keyed on that identity would
+			// re-create itself (and re-run `reload`) in a loop.
+			const formRef = React.useRef(props.form)
+			formRef.current = props.form
+			// The form's IDENTITY is unstable (a fresh props object per render), but its
+			// PRESENCE is not: only that travels in the dependency list.
+			const hasForm = props.form !== undefined
+			const client = React.useMemo(
+				() => (remote === undefined && !hasForm ? undefined : namespaceClient(remote, () => formRef.current)),
+				[remote, hasForm]
+			)
 			const [snapshot, setSnapshot] = React.useState(null)
 			const [draft, setDraft] = React.useState(null)
 			const [status, setStatus] = React.useState('')
 			const [candidates, setCandidates] = React.useState(null)
 
 			/**
-			 * Read the section. There is no push channel for a third-party card on
-			 * either generation — a 0.1.x scope could be subscribed to, but the service
-			 * that bound it is the one 0.2.x removed, so the card re-reads instead:
-			 * on mount, after a save, and whenever the user asks for a refresh.
+			 * Read the section. A Host-owned page form already follows the shared
+			 * settings mirror, so this only has to seed the local draft from it; the
+			 * Remote path has no push channel for a third-party card on either
+			 * generation — a 0.1.x scope could be subscribed to, but the service that
+			 * bound it is the one 0.2.x removed — so that path re-reads on mount,
+			 * after a save, and whenever the user asks for a refresh.
 			 */
 			const reload = React.useCallback(async () => {
 				if (client === undefined) {
@@ -393,12 +523,22 @@ window.__ModuleLoader__.load({
 					setSnapshot(next === undefined ? null : next)
 					if (next === undefined) setStatus('没有找到 ' + NAMESPACE + ' 这个设置节：请确认插件已挂载且未被禁用。')
 				} catch (error) {
-					setStatus('读取配置失败：' + (error && error.message ? error.message : String(error)))
+					// A missing section reports its own diagnostic (it lists the
+					// namespaces the Host does serve); anything else is a read failure.
+					const missing = error !== null && typeof error === 'object' && error.code === 'image-router/section-missing'
+					setStatus(missing ? String(error.message) : '读取配置失败：' + (error && error.message ? error.message : String(error)))
 				}
 			}, [client])
 			React.useEffect(() => {
 				void reload()
 			}, [reload])
+
+			// A Host-owned form pushes: follow its revision so a write that settles
+			// elsewhere (another tab, the entry's own page) lands in this draft too.
+			const formRevision = props.form?.state?.revision
+			React.useEffect(() => {
+				void reload()
+			}, [reload, formRevision])
 
 			const effective = routeOf(snapshot?.value)
 			const writable = snapshot?.writable === true
@@ -558,7 +698,16 @@ window.__ModuleLoader__.load({
 					set(['vision', 'model'], model)
 				}
 				set(['mode'], value.mode)
-				set(['instruction'], value.instruction)
+				// A blank box means "use the built-in instruction", so write its ABSENCE
+				// rather than an empty string. This card used to write the field on every
+				// save, and an unset section holds nothing: `instruction: ""` then landed
+				// in the profile patch, where 0.2.x treats it as the entry's live
+				// configuration and the Host rejected the whole entry — the plugin
+				// disabled itself and looked like it "一直不生效". Unsetting also repairs a
+				// value a previous save left behind.
+				const instruction = text(value.instruction)
+				if (instruction.trim().length === 0) unset(['instruction'])
+				else set(['instruction'], instruction)
 				set(['maxTokens'], maxTokens)
 				set(['timeoutMs'], timeoutMs)
 				set(['label'], value.label === true)
@@ -735,12 +884,15 @@ window.__ModuleLoader__.load({
 					onChange: (next) => edit({ mode: next })
 				}),
 				h('label', { style: styles.row, key: 'instruction' }, [
-					h('span', { style: styles.label, key: 'l' }, 'instruction — 给视觉模型的指令'),
+					h('span', { style: styles.label, key: 'l' }, 'instruction — 给视觉模型的指令（留空 = 内置默认指令）'),
 					h('textarea', {
 						key: 'i',
 						style: { ...styles.input, minHeight: '72px', resize: 'vertical' },
 						value: value.instruction,
 						disabled: !writable,
+						// The default is long; the placeholder says what leaving it empty
+						// buys instead of pasting the whole prompt into the hint slot.
+						placeholder: '留空即用内置默认指令：先原样转录图片中的文字，再描述画面与关键细节。',
 						onChange: (event) => edit({ instruction: event.target.value })
 					})
 				]),
@@ -912,22 +1064,27 @@ window.__ModuleLoader__.load({
 		const inject = ['slots', 'remote', 'remote.settings', 'remote.llm']
 
 		/**
-		 * Where the card is claimed, one entry per generation.
+		 * Where the card is claimed, one entry per generation and surface.
 		 *
 		 * `slots.inject` runs its callback only once an owner DECLARES the slot, so
-		 * claiming both is how one card serves two generations without sniffing a
-		 * version: in a given runtime only one of these is ever declared, so exactly
-		 * one card is registered, and the other claim is inert.
+		 * claiming all of them is how one card serves every generation without
+		 * sniffing a version: in a given runtime only the slots that exist are ever
+		 * declared, so exactly one card is registered per surface and the other
+		 * claims stay inert.
 		 *
 		 *  - `plugins.bundle.config` (0.2.x) — a bundle's own configuration, keyed by
-		 *    the bundle's package name, rendered on the bundle's page. Its owner asks
-		 *    for two views (`summary` on the row, `page` for the form); the card draws
-		 *    the one-liner for `summary`.
+		 *    the bundle's package name, rendered on the bundle's page.
+		 *  - `plugins.row.config` (0.2.1+) — one row's configuration, keyed by
+		 *    `` `${bundle}#${row id}` `` with the id the bundle's patch declares; the
+		 *    row gains the Configure control that opens this page. Its owner passes
+		 *    the entry's own Host form (`{ state, mutate }`), which the card prefers
+		 *    over the Remote table: no namespace guessing is involved there.
 		 *  - `settings.plugin.item` (0.1.x) — the plugin-configuration tab, keyed by
 		 *    the settings namespace it edits.
 		 */
 		const CARD_SLOTS = [
 			{ name: 'plugins.bundle.config', options: { key: PACKAGE } },
+			{ name: 'plugins.row.config', options: { key: PACKAGE + '#' + ROW_ID } },
 			{ name: 'settings.plugin.item', options: { key: NAMESPACE } }
 		]
 
@@ -992,13 +1149,16 @@ window.__ModuleLoader__.load({
 							// The registration options follow the contract the owning
 							// surface ships for its own contributions: `name` + the slot's
 							// key. `inject` supplies the hooks the card is handed, and this
-							// card needs none — it reads the Remote table captured above.
-							// `locale` is deliberately NOT declared: this card draws its
-							// own copy inline and registers no locale entries, and
-							// declaring a copy namespace with nothing under it is a claim
-							// the card cannot honour.
+							// card needs none — it reads the Remote table (or the Host form
+							// the owner passes as a prop) captured above. `locale` is
+							// deliberately NOT declared: this card draws its own copy inline
+							// and registers no locale entries, and declaring a copy namespace
+							// with nothing under it is a claim the card cannot honour.
 							const cardOptions = { name: slot.name, inject: () => ({}), ...slot.options }
-							ctx.slots.register(cardOptions, (props) => h(Card, { remote, view: props?.view }))
+							// `props.form` is the owner-supplied page form (0.2.1+); it is
+							// forwarded, never required — the Remote table still serves a
+							// deployment whose owner passes none.
+							ctx.slots.register(cardOptions, (props) => h(Card, { remote, form: props?.form, view: props?.view }))
 							report.registered.push(slot.name)
 							report.slotOptions = Object.keys(cardOptions)
 							// Read the ledger back. An owner renders the intersection of

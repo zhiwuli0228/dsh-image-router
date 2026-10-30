@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Image Router",
+    "description": "Describe images with a vision model out of band: a pasted image is digested into text before admission, and the describe_image tool covers images on disk — without changing the session's model."
+  }
+}

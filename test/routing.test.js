@@ -295,7 +295,14 @@ test('normalizeConfig applies defaults and rejects unusable input', () => {
 	assert.ok(normalizeConfig({ vision: VISION, hint: '(' }).problems.some((problem) => problem.includes('hint')))
 	assert.ok(normalizeConfig({ vision: VISION, holdTurns: -1 }).problems.some((problem) => problem.includes('holdTurns')))
 	assert.ok(normalizeConfig({ vision: VISION, maxTokens: 0 }).problems.some((problem) => problem.includes('maxTokens')))
-	assert.ok(normalizeConfig({ vision: VISION, instruction: '  ' }).problems.some((problem) => problem.includes('instruction')))
+	// A blank instruction is "no override", not a broken configuration: it is the
+	// value the settings card used to write on every save, and on 0.2.x it lands in
+	// the entry's live Config, where rejecting it disabled the plugin outright.
+	const blank = normalizeConfig({ vision: VISION, instruction: '  ' })
+	assert.equal(blank.problems, undefined, 'a blank instruction must not disable the plugin')
+	assert.equal(blank.instruction, normalizeConfig({ vision: VISION }).instruction, 'it falls back to the built-in prompt')
+	assert.equal(normalizeConfig({ vision: VISION, instruction: '' }).instruction, blank.instruction)
+	assert.ok(normalizeConfig({ vision: VISION, instruction: 42 }).problems.some((problem) => problem.includes('instruction')))
 	assert.deepEqual(normalizeConfig({ vision: VISION, imageExtensions: ['.PNG', 'JPG'] }).imageExtensions, ['png', 'jpg'])
 })
 
@@ -824,6 +831,21 @@ test('apply registers describe_image with a JSON-Schema definition', () => {
 	assert.deepEqual(Object.keys(definition.parameters.properties).sort(), ['file_path', 'question'])
 	assert.deepEqual(definition.output.render({}, 'text'), [{ type: 'text', text: 'text' }])
 	assert.deepEqual(definition.output.schema, { type: 'string' })
+})
+
+test('a blank instruction in a profile patch does not disable the plugin', async () => {
+	// What a user hit on 0.2.x: the card saved `instruction: ""` into the profile
+	// patch, the entry's live Config therefore carried an empty string, and `apply`
+	// returned before registering anything — the plugin looked like it "一直不生效"
+	// with a single warn line as evidence. The value must read as "use the built-in
+	// instruction" so every already-poisoned profile recovers on the next boot.
+	const controller = fakeController({ noSelectionApi: true })
+	const tools = fakeTools()
+	const ctx = fakeContext(controller, fakeLlm(), { tools, attachments: fakeAttachments(), fs: fakeFs() })
+	apply(ctx, { vision: VISION, instruction: '' })
+
+	assert.equal(tools.registered.length, 1, 'the tool still registers')
+	assert.equal(ctx.logs.warn.length, 0, 'and no validation problem is reported')
 })
 
 test('describe_image reads a file and returns the vision analysis', async () => {
@@ -1481,7 +1503,8 @@ test('the browser half activates and registers its card', () => {
 		useState: (initial) => [initial, () => {}],
 		useEffect: () => {},
 		useCallback: (fn) => fn,
-		useMemo: (fn) => fn()
+		useMemo: (fn) => fn(),
+		useRef: (initial) => ({ current: initial })
 	}
 	const module = entry.factory((name) => (name === 'react' ? React : (() => { throw new Error(name) })()))
 
@@ -1509,6 +1532,8 @@ test('the browser half activates and registers its card', () => {
 			},
 			entries: (name) => {
 				if (name === 'plugins.bundle.config') return [{ options: { key: 'dsh-image-router' } }]
+				// 0.2.1 keys a row's configuration by `<package>#<the id the bundle patch declares>`.
+				if (name === 'plugins.row.config') return [{ options: { key: 'dsh-image-router#image-router' } }]
 				if (name === 'settings.plugin.item') return [{ options: { key: 'image-router' } }]
 				if (name === 'sidebar.panellist') return [{ options: { id: 'image-router' } }]
 				if (name === 'main') return [{ options: { key: 'image-router' } }]
@@ -1533,21 +1558,23 @@ test('the browser half activates and registers its card', () => {
 	)
 	assert.equal(module.inject.includes('settingsScope'), false, 'a 0.1.x-only service must never be a declared dependency')
 
-	// One card, two generations: both claims are made, and each fires only where its
-	// owner declares the slot (this double declares both, so both are recorded).
-	// Then the sidebar entry and the page it opens. The two must share one id: the
-	// layout dispatches `main` by the id the selected row carries, so a mismatch is
-	// a row that opens nothing.
+	// One card, three surfaces: every claim is made, and each fires only where its
+	// owner declares the slot (this double declares all of them, so all are
+	// recorded). Then the sidebar entry and the page it opens. The two must share
+	// one id: the layout dispatches `main` by the id the selected row carries, so a
+	// mismatch is a row that opens nothing.
 	assert.deepEqual(registered, [
 		'inject:plugins.bundle.config',
 		'register:plugins.bundle.config:dsh-image-router',
+		'inject:plugins.row.config',
+		'register:plugins.row.config:dsh-image-router#image-router',
 		'inject:settings.plugin.item',
 		'register:settings.plugin.item:image-router',
 		'inject:sidebar.panellist',
 		'register:sidebar.panellist:image-router',
 		'inject:main',
 		'register:main:image-router'
-	], 'the settings card keeps both generation slots; the sidebar row and its main panel share one id')
+	], 'the settings card keeps every surface it can be dispatched from; the sidebar row and its main panel share one id')
 
 	// Drive the dispatched render under the same gate: this is the call that threw
 	// in the browser and left the tab with nothing to draw.
@@ -1558,6 +1585,12 @@ test('the browser half activates and registers its card', () => {
 	assert.equal(typeof element.props.remote.settings.describe, 'function', 'and specifically the namespace table the section is read from')
 	assert.equal(typeof element.props.remote.settings.mutate, 'function', 'and the write path it saves through')
 	assert.equal(typeof element.props.remote.llm.listProviders, 'function')
+	// A 0.2.1 owner passes the entry's own Host form; the registration must forward
+	// it instead of dropping it on the floor, or the row page falls back to a
+	// namespace lookup it does not need.
+	const rowForm = { state: { value: {}, writable: true, revision: 1 }, mutate: () => {} }
+	const rowElement = renders.get('plugins.row.config')({ view: 'page', form: rowForm })
+	assert.equal(rowElement.props.form, rowForm, 'the row configuration page forwards the Host-supplied form')
 
 	// The sidebar icon and the page component are registered, not just claimed.
 	const iconElement = renders.get('sidebar.panellist')({ size: 22, active: true })
@@ -1585,7 +1618,8 @@ test('the sidebar row label follows the UI language', () => {
 		useState: (initial) => [initial, () => {}],
 		useEffect: () => {},
 		useCallback: (fn) => fn,
-		useMemo: (fn) => fn()
+		useMemo: (fn) => fn(),
+		useRef: (initial) => ({ current: initial })
 	}
 	const module = entry.factory((name) => (name === 'react' ? React : (() => { throw new Error(name) })()))
 
@@ -1638,7 +1672,8 @@ test('the sidebar entry opens a page carrying the configuration form', async () 
 			}
 		},
 		useCallback: (fn) => fn,
-		useMemo: (fn) => fn()
+		useMemo: (fn) => fn(),
+		useRef: (initial) => ({ current: initial })
 	}
 	const module = entry.factory((name) => (name === 'react' ? React : (() => { throw new Error(name) })()))
 
@@ -1776,7 +1811,8 @@ test('the card draws a one-liner for the bundle page summary view', async () => 
 			}
 		},
 		useCallback: (fn) => fn,
-		useMemo: (fn) => fn()
+		useMemo: (fn) => fn(),
+		useRef: (initial) => ({ current: initial })
 	}
 	const module = entry.factory((name) => (name === 'react' ? React : (() => { throw new Error(name) })()))
 
@@ -1850,7 +1886,8 @@ test('the vision picker is populated from the configured routes', async () => {
 			}
 		},
 		useCallback: (fn) => fn,
-		useMemo: (fn) => fn()
+		useMemo: (fn) => fn(),
+		useRef: (initial) => ({ current: initial })
 	}
 	const module = entry.factory((name) => (name === 'react' ? React : (() => { throw new Error(name) })()))
 
@@ -1938,7 +1975,8 @@ test('the browser half reports an unusable slot service instead of throwing at a
 		useState: (initial) => [initial, () => {}],
 		useEffect: () => {},
 		useCallback: (fn) => fn,
-		useMemo: (fn) => fn()
+		useMemo: (fn) => fn(),
+		useRef: (initial) => ({ current: initial })
 	}
 	const module = entry.factory((name) => (name === 'react' ? React : (() => { throw new Error(name) })()))
 
@@ -2052,7 +2090,8 @@ test('the card never seeds its editor from a stored key', async () => {
 		useEffect: () => {},
 		useCallback: (fn) => fn,
 		useSyncExternalStore: (_s, snapshot) => snapshot(),
-		useMemo: (fn) => fn()
+		useMemo: (fn) => fn(),
+		useRef: (initial) => ({ current: initial })
 	}
 	const module = entry.factory((name) => (name === 'react' ? React : (() => { throw new Error(name) })()))
 	let renderCard
@@ -2166,4 +2205,182 @@ test('the endpoint write falls back to a clean profile when no read is possible'
 		assert.equal(op.value.api, expected.api)
 		assert.equal(op.value.apiKeyEnv, expected.apiKeyEnv)
 	}
+})
+
+// ── The desktop profile's settings identity ──────────────────────────────────
+//
+// dsh-desktop 0.2.1 composes a bundle-inserted row as `include:<patch id>` and
+// the settings service keys its forms by that ENTRY id (`ns: entry.options.id`).
+// Matching the bare `image-router` therefore found nothing there, and the card
+// reported "没有找到 image-router 这个设置节：请确认插件已挂载且未被禁用。" while
+// the same package kept working on a 0.1.x profile, whose entry id carries no
+// prefix. These two tests pin both halves of the fix: resolve the section by its
+// entry id, and prefer the Host-supplied page form when the surface passes one.
+
+/** A stateful-enough React double; Card is mounted twice by hand, as React would. */
+function desktopHarness() {
+	const hooks = []
+	let cursor = 0
+	const renderElement = (element) => (typeof element.type === 'function' ? element.type(element.props) : element)
+	const React = {
+		createElement: (type, props, ...children) => ({ type, props: props ?? {}, children: children.flat(Infinity).filter((child) => child !== null && child !== undefined && child !== false) }),
+		useState(initial) {
+			const index = cursor++
+			if (hooks.length <= index) hooks[index] = initial
+			return [hooks[index], (next) => { hooks[index] = typeof next === 'function' ? next(hooks[index]) : next }]
+		},
+		useEffect(fn) {
+			const index = cursor++
+			if (hooks.length <= index) {
+				hooks[index] = true
+				queueMicrotask(fn)
+			}
+		},
+		useCallback: (fn) => fn,
+		useMemo: (fn) => fn(),
+		useRef: (initial) => ({ current: initial })
+	}
+	const source = readFileSync(new URL('../client/client.js', import.meta.url), 'utf8')
+	let entry
+	new Function('window', source)({ __ModuleLoader__: { load: (value) => { entry = value } } })
+	const module = entry.factory((name) => (name === 'react' ? React : (() => { throw new Error(name) })()))
+	const find = (node, predicate, out = []) => {
+		if (node === null || node === undefined || typeof node !== 'object') return out
+		if (Array.isArray(node)) {
+			for (const child of node) find(child, predicate, out)
+			return out
+		}
+		if (predicate(node)) out.push(node)
+		find(node.children, predicate, out)
+		return out
+	}
+	const textOf = (element) => (Array.isArray(element.children) ? element.children.join('') : String(element.children))
+	return {
+		module,
+		renderElement,
+		find,
+		textOf,
+		resetHooks: () => { cursor = 0 },
+		render: (render, props) => renderElement(render(props))
+	}
+}
+
+test('a bundle-inserted entry id still resolves the settings section', async () => {
+	const harness = desktopHarness()
+	const writes = []
+	let renderCard
+	harness.module.apply({
+		remote: {
+			settings: {
+				describe: async () => ({
+					ok: true,
+					value: {
+						namespaces: [
+							// Served by the same Host, and NOT this plugin's section.
+							{ ns: 'llm-pi-ai', value: { providers: { 'qwen-token-plan-cn': { models: [{ id: 'qwen3.8-flash' }] } } }, writable: true, revision: 9 },
+							// The Loader entry id of a bundle-inserted row.
+							{ ns: 'include:image-router', value: { mode: 'switch', vision: { provider: 'qwen-token-plan-cn', model: 'qwen3.8-flash' }, maxTokens: 900, timeoutMs: 120000, label: true }, writable: true, revision: 9 }
+						]
+					}
+				}),
+				mutate: async (ns, ops, revision) => { writes.push({ ns, ops, revision }) }
+			},
+			llm: { listProviders: async () => ({ ok: true, value: [] }) }
+		},
+		slots: {
+			inject: (_name, callback) => callback(),
+			register: (options, render) => { if (options.name === 'plugins.bundle.config') renderCard = render },
+			entries: () => []
+		}
+	})
+
+	harness.resetHooks()
+	harness.render(renderCard, { view: 'page' })
+	await flush()
+	await flush()
+
+	harness.resetHooks()
+	const summary = harness.render(renderCard, { view: 'summary' })
+	const line = harness.textOf(summary)
+	assert.equal(line.includes('qwen-token-plan-cn / qwen3.8-flash'), true, 'the prefixed section is read as this plugin\'s')
+	assert.equal(line.includes('没有找到'), false, 'and the missing-section diagnostic is not raised')
+
+	// The write must address the same entry id: the read resolving and the write
+	// spelling a different namespace would fail with "settings/rejected" instead.
+	harness.resetHooks()
+	const page = harness.render(renderCard, { view: 'page' })
+	const save = harness.find(page, (node) => node.type === 'button' && harness.textOf(node) === '保存')[0]
+	assert.ok(save !== undefined, 'the page keeps its save action')
+	await save.props.onClick()
+	await flush()
+	assert.equal(writes.length, 1, 'one write carries the whole section')
+	assert.equal(writes[0].ns, 'include:image-router', 'the write names the ENTRY id the Host serves')
+	assert.equal(writes[0].revision, 9, 'and fences on the revision the read reported')
+	assert.deepEqual(
+		writes[0].ops.find((op) => op.op === 'set' && op.path[0] === 'mode'),
+		{ op: 'set', path: ['mode'], value: 'switch' }
+	)
+	// The one field that must never be stored blank: on 0.2.x the entry's Config IS
+	// the settings section, and an empty `instruction` used to disable the plugin.
+	assert.ok(writes[0].ops.some((op) => op.op === 'unset' && op.path[0] === 'instruction'), 'a blank instruction is unset, not stored')
+	assert.equal(writes[0].ops.some((op) => op.op === 'set' && op.path[0] === 'instruction'), false, 'never written back as an empty string')
+})
+
+test('a Host-supplied page form is preferred over the Remote table', async () => {
+	const harness = desktopHarness()
+	const formWrites = []
+	let renderCard
+	harness.module.apply({
+		remote: {
+			settings: {
+				// A 0.2.1 owner that hands a form may serve a namespace under a name
+				// this card cannot guess; the form is the whole answer.
+				describe: async () => ({ ok: true, value: { namespaces: [] } }),
+				mutate: async () => { throw new Error('the row page must not write through the Remote table') }
+			},
+			llm: { listProviders: async () => ({ ok: true, value: [] }) }
+		},
+		slots: {
+			inject: (_name, callback) => callback(),
+			register: (options, render) => { if (options.name === 'plugins.row.config') renderCard = render },
+			entries: () => []
+		}
+	})
+
+	const form = {
+		state: {
+			status: 'ready',
+			value: { mode: 'digest', vision: { provider: 'form-provider', model: 'form-model' }, maxTokens: 512, timeoutMs: 60000, label: false },
+			writable: true,
+			revision: 2
+		},
+		mutate: async (ops, revision) => { formWrites.push({ ops, revision }) }
+	}
+
+	harness.resetHooks()
+	harness.render(renderCard, { view: 'page', form })
+	await flush()
+	await flush()
+
+	harness.resetHooks()
+	const summary = harness.render(renderCard, { view: 'summary', form })
+	const line = harness.textOf(summary)
+	assert.equal(line.includes('form-provider / form-model'), true, 'the form state is what the card reads')
+	assert.equal(line.includes('没有找到'), false, 'no namespace lookup is needed for a Host-owned form')
+
+	harness.resetHooks()
+	const page = harness.render(renderCard, { view: 'page', form })
+	const save = harness.find(page, (node) => node.type === 'button' && harness.textOf(node) === '保存')[0]
+	assert.ok(save !== undefined)
+	await save.props.onClick()
+	await flush()
+	assert.equal(formWrites.length, 1, 'the form owns the write')
+	assert.equal(formWrites[0].revision, 2, 'with the revision its own state reported')
+	assert.deepEqual(
+		formWrites[0].ops.find((op) => op.op === 'set' && op.path[0] === 'vision'),
+		{ op: 'set', path: ['vision', 'provider'], value: 'form-provider' }
+	)
+	// Same rule on the Host-owned form path: a blank box unsets the field.
+	assert.ok(formWrites[0].ops.some((op) => op.op === 'unset' && op.path[0] === 'instruction'), 'the blank instruction is unset here too')
+	assert.equal(formWrites[0].ops.some((op) => op.op === 'set' && op.path[0] === 'instruction'), false)
 })
