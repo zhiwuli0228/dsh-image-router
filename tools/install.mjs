@@ -31,7 +31,7 @@
 import { execFileSync, spawnSync } from 'node:child_process'
 import { existsSync, readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { dirname, join, resolve } from 'node:path'
+import { dirname, isAbsolute, join, resolve, win32 } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
@@ -86,14 +86,28 @@ export function parseArgs(argv) {
 }
 
 /**
+ * Normalise a user-supplied path without mangling the other platform's syntax.
+ *
+ * `resolve('D:\\dsh')` on POSIX treats the whole thing as a relative name and glues
+ * the working directory in front, which then turns up in the profile path and in CI
+ * (where a Windows path is the natural thing for a test to use). A path that is
+ * already absolute for either platform is returned untouched.
+ * @param {string} value - the path as given.
+ * @returns {string} the path to use.
+ */
+function absolute(value) {
+	return isAbsolute(value) || win32.isAbsolute(value) ? value : resolve(value)
+}
+
+/**
  * The profile root: `$DSH_HOME`, else `~/.dsh`.
  * @param {NodeJS.ProcessEnv} env - environment to read.
  * @param {string} [home] - explicit `--home`.
  * @returns {string} the DSH home directory.
  */
 export function resolveHome(env, home) {
-	if (home !== undefined) return resolve(home)
-	if (typeof env.DSH_HOME === 'string' && env.DSH_HOME.length > 0) return resolve(env.DSH_HOME)
+	if (home !== undefined) return absolute(home)
+	if (typeof env.DSH_HOME === 'string' && env.DSH_HOME.length > 0) return absolute(env.DSH_HOME)
 	return join(env.USERPROFILE ?? env.HOME ?? homedir(), '.dsh')
 }
 
