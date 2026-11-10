@@ -6,8 +6,8 @@
  *
  *   node tools/check-contract.mjs
  *
- * Six things are guarded, plus the manual installer's target list — each one a
- * mistake that has actually happened or that cannot be undone once published:
+ * The checks below guard, one by one, a mistake that has actually happened or that
+ * cannot be undone once published:
  *
  *   1. `dsh.bundle.patch` points at a file that exists and parses.
  *   2. A declared browser half exports a bundle `dsh-client-modules` can read.
@@ -28,6 +28,11 @@
  *   7. The manual installer knows the same two targets the README documents. A target
  *      it builds but the README never names is unfindable; a target the README names
  *      but it cannot build installs into a profile nobody reads.
+ *   8. `engines.dsh` states the DSH range this build runs on, and the README repeats
+ *      that exact range. Since 0.2.2 the launcher evaluates this field and disables a
+ *      row the runtime misses, so it is the one declaration that actually gates an
+ *      install — and a range the docs contradict is the same "installed, then broken"
+ *      failure from the other side.
  *
  * This file is a development tool for dsh-image-router, not part of the plugin, and it
  * is not published (`files` in package.json lists what ships).
@@ -186,6 +191,29 @@ await check('the README names the current version', () => {
 		throw new Error(`README says ${match[1]}, package.json says ${manifest.version} — bump both (tools/release.mjs does it)`)
 	}
 	return match[1]
+})
+
+/**
+ * The DSH versions this build may run on, declared where the Host reads it. Since
+ * 0.2.2 the profile launcher evaluates `engines.dsh` before composing a row and
+ * DISABLES a row whose range the runtime misses — so this field, unlike a README
+ * claim, is what actually stops an incompatible install. An absent or unbounded
+ * range would admit every future DSH and silently reintroduce the breakage the
+ * range exists to prevent, and a range the README never repeats drifts into a lie.
+ */
+await check('the manifest declares the DSH versions this build supports', () => {
+	const range = manifest.engines?.dsh
+	if (typeof range !== 'string' || range.trim().length === 0) {
+		throw new Error('package.json engines.dsh must be a non-empty semver range (0.2.2 gates on it)')
+	}
+	if (range.trim() === '*' || range.trim() === 'x') {
+		throw new Error(`engines.dsh "${range}" admits every DSH version, which declares nothing`)
+	}
+	const readme = read('README.md')
+	if (!readme.includes(`\`engines.dsh\`: \`${range}\``)) {
+		throw new Error(`README never states \`engines.dsh\`: \`${range}\` — the install gate and the docs must agree`)
+	}
+	return range
 })
 
 await check('the manual installer names both targets and the README documents them', async () => {

@@ -74,7 +74,7 @@ function declaredContext(base, declared) {
 }
 
 /** Minimal ctx double recording logger calls and collecting effects. */
-function fakeContext(controller, llm, { controllerAvailable = true, attachments, fs, tools, settings, credentials } = {}) {
+function fakeContext(controller, llm, { controllerAvailable = true, attachments, fs, tools, settings, credentials, fileUploads } = {}) {
 	const logs = { info: [], warn: [] }
 	const disposers = []
 	const injected = []
@@ -89,6 +89,7 @@ function fakeContext(controller, llm, { controllerAvailable = true, attachments,
 		get: (key) => {
 			if (key === 'llm') return llm
 			if (key === 'attachments') return attachments
+			if (key === 'fileUploads') return fileUploads
 			if (key === 'fs') return fs
 			if (key === 'tools') return tools
 			if (key === 'settings') return settings
@@ -194,10 +195,50 @@ function fakeAttachments({ fail = false } = {}) {
 		async admitPromptContent(parts) {
 			if (fail) throw new Error('IMAGE_TOO_LARGE')
 			return parts.map((part) => {
+				// The real service passes an already stored image through unchanged, which
+				// is how a `file` upload receipt that names an image reaches admission.
+				if (part.type === 'image' && part.attachment !== undefined) return { type: 'image', attachment: part.attachment }
 				const attachment = { attachmentId: `a${this.admitted.length}`, mediaType: part.mediaType ?? 'image/png' }
 				this.admitted.push(attachment)
 				return { type: 'image', attachment }
 			})
+		}
+	}
+}
+
+/**
+ * File-upload service double shaped like DSH 0.2.2's: a prompt cites a pasted
+ * image by the receipt of its upload, and `resolve` answers the staged file or
+ * image that receipt stands for.
+ *
+ * @param staged - `receiptId -> staged attachment` this Session staged.
+ */
+function fakeFileUploads(staged = {}) {
+	const bindings = []
+	const bound = []
+	return {
+		bindings,
+		bound,
+		resolved: [],
+		async resolveAgent(sessionId) {
+			return { id: 'agent', session: { header: { id: sessionId } } }
+		},
+		resolve(_agent, receiptId) {
+			this.resolved.push(receiptId)
+			return staged[receiptId]
+		},
+		bindPrompt(_agent, receiptIds, requestId) {
+			bindings.push({ receiptIds, requestId })
+			const record = { receiptIds, requestId, committed: false, disposed: false }
+			bound.push(record)
+			return {
+				commit() {
+					record.committed = true
+				},
+				[Symbol.dispose]() {
+					record.disposed = true
+				}
+			}
 		}
 	}
 }
@@ -609,6 +650,110 @@ test('digest mode survives an unusable attachment store', async () => {
 	assert.equal(llm.calls.length, 0)
 	assert.ok(readFileSync(trace, 'utf8').includes('digest-admit-failed'))
 	rmSync(join(trace, '..'), { recursive: true, force: true })
+})
+
+test('digest mode digests an image that arrives as a staged upload receipt (0.2.2 prompt shape)', async () => {
+	// DSH 0.2.2 stopped inlining a pasted image: the composer uploads it through the
+	// file-upload service and the prompt carries `{ type: 'file', receiptId }`, which
+	// only `sessionController.prompt()` turns into an image part — after this wrapper
+	// has run. Reading just `type: 'image'` therefore saw no pasted image at all, and
+	// the prompt reached a possibly text-only model unchanged.
+	const controller = fakeController({ noSelectionApi: true })
+	const llm = fakeLlm()
+	const attachments = fakeAttachments()
+	const stored = { attachmentId: 'up-1', mediaType: 'image/png', name: 'shot.png' }
+	const fileUploads = fakeFileUploads({ r1: { type: 'image', attachment: stored, encodedBytes: 4096 } })
+	const trace = join(mkdtempSync(join(tmpdir(), 'image-router-receipt-')), 'trace.log')
+	const ctx = fakeContext(controller, llm, { attachments, fileUploads })
+	apply(ctx, { vision: VISION, traceFile: trace })
+
+	await controller.prompt({ sessionId: 's-receipt', requestId: 'req-1', content: [{ type: 'text', text: '读一下' }, { type: 'file', receiptId: 'r1' }] })
+
+	assert.equal(llm.calls.length, 1, 'the vision route is asked about the uploaded image')
+	assert.deepEqual(llm.calls[0].messages[0].content.filter((part) => part.type === 'image').map((part) => part.attachment), [stored], 'the stored image is what the vision route reads')
+	const forwarded = controller.requests[0]
+	assert.equal(forwarded.content.some((part) => part.type === 'file'), false, 'the consumed receipt no longer reaches the Host')
+	assert.equal(forwarded.content.some((part) => part.type === 'image'), false, 'and no image block does either')
+	assert.ok(replacementText(forwarded).includes('VISION ROUTER'), 'the analysis replaces the image')
+	assert.ok(replacementText(forwarded).includes('读一下'), 'the user text keeps its place')
+	assert.deepEqual(fileUploads.bindings, [{ receiptIds: ['r1'], requestId: 'req-1' }], 'the consumed receipt is bound so the Host retires it')
+	assert.equal(fileUploads.bound[0].committed, true, 'the binding is kept once the prompt is admitted')
+	const audit = readFileSync(trace, 'utf8')
+	assert.ok(audit.includes('receipt-images session=s-receipt receipts=1'), 'the receipt path is audited, not silent')
+	assert.ok(audit.includes(`digest session=s-receipt vision=${VISION.provider}/${VISION.model} images=1`), 'the digest line still names the route')
+	rmSync(join(trace, '..'), { recursive: true, force: true })
+})
+
+test('digest mode leaves a receipt that names an ordinary file to the Host', async () => {
+	const controller = fakeController({ noSelectionApi: true })
+	const llm = fakeLlm()
+	const fileUploads = fakeFileUploads({ f1: { type: 'file', attachment: { attachmentId: 'file-1', name: 'report.pdf' } } })
+	const ctx = fakeContext(controller, llm, { attachments: fakeAttachments(), fileUploads })
+	apply(ctx, { vision: VISION })
+	const content = [{ type: 'text', text: '看下附件' }, { type: 'file', receiptId: 'f1' }]
+
+	await controller.prompt({ sessionId: 's1', requestId: 'req-2', content })
+
+	assert.equal(llm.calls.length, 0, 'a document is not image work')
+	assert.deepEqual(controller.requests[0].content, content, 'the receipt is forwarded exactly as it arrived')
+	assert.equal(fileUploads.bindings.length, 0, 'nothing is bound when nothing was consumed')
+})
+
+test('a deployment without the file-upload service forwards a receipt untouched', async () => {
+	// 0.1.x/0.2.1 hosts have no receipt shape and no such service; an optional
+	// lookup keeps this plugin working there instead of taking the entry down.
+	const controller = fakeController({ noSelectionApi: true })
+	const llm = fakeLlm()
+	const ctx = fakeContext(controller, llm, { attachments: fakeAttachments() })
+	apply(ctx, { vision: VISION })
+	const content = [{ type: 'file', receiptId: 'r1' }]
+
+	await controller.prompt({ sessionId: 's1', requestId: 'req-3', content })
+
+	assert.equal(llm.calls.length, 0)
+	assert.deepEqual(controller.requests[0].content, content, 'the Host resolves its own receipt')
+})
+
+test('a receipt this session never staged is forwarded untouched', async () => {
+	const controller = fakeController({ noSelectionApi: true })
+	const llm = fakeLlm()
+	const fileUploads = fakeFileUploads({})
+	const ctx = fakeContext(controller, llm, { attachments: fakeAttachments(), fileUploads })
+	apply(ctx, { vision: VISION })
+	const content = [{ type: 'file', receiptId: 'unknown' }]
+
+	await controller.prompt({ sessionId: 's1', requestId: 'req-4', content })
+
+	assert.equal(llm.calls.length, 0)
+	assert.deepEqual(controller.requests[0].content, content)
+	assert.equal(fileUploads.bindings.length, 0)
+})
+
+test('a refused prompt releases the receipt binding it took', async () => {
+	const controller = fakeController({ noSelectionApi: true })
+	const fileUploads = fakeFileUploads({ r1: { type: 'image', attachment: { attachmentId: 'up-1' }, encodedBytes: 10 } })
+	const ctx = fakeContext(controller, fakeLlm(), { attachments: fakeAttachments(), fileUploads })
+	controller.prompt = async () => {
+		throw new Error('prompt rejected')
+	}
+	apply(ctx, { vision: VISION })
+
+	await assert.rejects(() => controller.prompt({ sessionId: 's1', requestId: 'req-5', content: [{ type: 'file', receiptId: 'r1' }] }), /prompt rejected/)
+	assert.equal(fileUploads.bound[0].disposed, true, 'the receipt is left exactly as it was found')
+	assert.equal(fileUploads.bound[0].committed, false)
+})
+
+test('switch mode routes a receipt-backed image turn to the vision route', async () => {
+	const controller = fakeController()
+	const fileUploads = fakeFileUploads({ r1: { type: 'image', attachment: { attachmentId: 'up-1' }, encodedBytes: 100 } })
+	const ctx = fakeContext(controller, undefined, { fileUploads })
+	apply(ctx, { mode: 'switch', vision: VISION, text: TEXT, imageExtensions: EXTENSIONS })
+	const content = [{ type: 'file', receiptId: 'r1' }]
+
+	await controller.prompt({ sessionId: 's1', requestId: 'req-6', content })
+
+	assert.deepEqual(controller.calls, [VISION], 'the receipt names an image, so the vision route is lent')
+	assert.deepEqual(controller.requests[0].content, content, 'switch mode never rewrites the forwarded request')
 })
 
 test('switch mode lends the vision route for an image turn and restores it afterwards', async () => {

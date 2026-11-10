@@ -1,7 +1,7 @@
 # dsh-image-router
 
 > [!IMPORTANT]
-> **当前版本 `0.6.3`，已发布到 npm。从 0.6.0 起它是「带左侧栏入口」的 DSH 插件：侧栏多一行「图片路由」，点开是独立配置页（0.2.1 的 `main` keyed 槽 + `sidebar.panellist` list 槽契约），同时保留原来的设置卡片。适配 DSH `0.1.5-rc.1+` 与 `0.2.x`：`0.1.5-rc.1`、`dsh-desktop 0.2.0-rc.2` 为真机验证线；**`0.2.1-rc.5` 是当前桌面线** —— 0.6.2 修掉了 0.2.1 在桌面端最致命的一处不适配：设置节的命名空间是 **loader 条目 id**（bundle 插入的行是 `include:image-router`），而卡片此前只认真名 `image-router`，于是配置页永远是「没有找到设置节」。0.6.2 改为按条目 id 解析（真名 → 后缀 → schema 形状），并同时认领 0.2.1 新增的 `plugins.row.config` 行配置页、补上 `locale/*.json` 标题/描述与 `icon.svg`。另修掉一个更阴的 0.2.x 陷阱：卡片不再把没填的 `instruction` 写成空串（那会让宿主校验拒绝整个条目、插件自我禁用），宿主也把空串视为「用内置指令」—— 已中招的 profile 重启即恢复。0.6.2 同步支持桌面 `0.2.1-rc.5`：12 个契约包逐文件比对，除 CSS 类名哈希 / 构建路径 / 提交号外**零变更**，并在真实 rc.5 运行时上冷启动取证（`apply-entered` → `tool-registered` → `mounted`，boot manifest 里 `dsh-image-router` 与三条 `inject` 照旧）。**
+> **当前版本 `0.6.4`。**（发布走 `v*` tag：`release.yml` 先核对 tag 与 `package.json` 一致，再发布到 npm —— 所以 `latest` 以 registry 为准，升级用 `dsh plugin --profile web add dsh-image-router@latest`。）从 0.6.0 起它是「带左侧栏入口」的 DSH 插件：侧栏多一行「图片路由」，点开是独立配置页（`main` keyed 槽 + `sidebar.panellist` list 槽，0.2.1 起的契约），同时保留原来的设置卡片。适配 DSH `0.1.5-rc.1` → `0.2.2-rc.1`，并把这条边界写进 `engines.dsh`: `>=0.1.5-rc.1 <0.3.0-0` —— 0.2.2 起宿主在组合 profile 之前先做兼容性预检，范围不满足就把这一行 `disabled` 掉并给出诊断，而不是装上之后才崩。**`0.6.4` 新增桌面 `0.2.2-rc.1` 同步**：12 个契约包与 rc.5 逐文件比对（`sidebar.panellist` / `main` / `plugins.bundle.config` / `plugins.row.config` 的 key 与 props 均未变，新增项都是叠加：6 个 UI 语言、`settings.section.icon` 槽、`client-modules` 的 `asset()`），独立 `DSH_HOME` 冷启动 `apply-entered` → `tool-registered` → `vision-oracle-registered` → `mounted`，再用无头 Edge 真机渲染：侧栏行、独立配置页、插件页卡片、「保存」写回 profile 补丁层全部成立（`0.6.4` 未单独发到 npm —— 它只存在于工作树，与下面的修复一起作为 `0.6.5` 发布）。**`0.6.5` 修复官方 `0.2.2-rc.1` 的图片提示词形态变更**：普通会话的粘贴图不再内联成 `{type:'image', mediaType, data}`，而是先经 `fileUpload.uploadImage` 落盘、提示词里只带 `{type:'file', receiptId}`，由 `sessionController.prompt()` 在插件包装之后才解析回 `image`。只认 `type:'image'` 的 0.6.4 因此对每一张粘贴图都静默失效（连 `digest` 行都不写）。0.6.5 在包装层用同一个 file-upload 服务解析收据，把结果交给同一套判定，并把这个已消费的收据绑定到本次提示词上、交回宿主原有的退休路径；两种形态走同一条路。0.6.2 的历史修复（设置节按 loader 条目 id 解析、认领 `plugins.row.config`、空 `instruction` 不自我禁用）保持不变；**switch 模式在 0.2.2 上仍待适配** —— 0.2.2 删掉了 `selectionFor` / `selectForNextRequest`，换成 `selectModel` + `modelSelection.lastUsed`，未适配前该模式会记一行 `mount-skipped no selection API` 并只保留 `describe_image`（见〈已知限制〉）。
 > 若你装到的是更早的 `0.1.0`，那是本插件的第一个（已废弃的）构建，会让「设置 → 模型」页加载失败 —— 用 `dsh plugin --profile web add dsh-image-router@latest` 直接装最新版即可。
 > **`0.4.4` 及更早的版本装不进 `0.2.x`**：插件的浏览器半边声明了 0.2.x 已删除的 `settingsScope` 服务，条目永久 pending，web boot 会以 `1 entry did not activate` 中止整次启动（详见〈0.2.x 与 0.1.x 的差异〉）。
 
@@ -14,8 +14,8 @@
   <a href="https://github.com/zhiwuli0228/dsh-image-router/actions/workflows/release.yml"><img alt="release" src="https://github.com/zhiwuli0228/dsh-image-router/actions/workflows/release.yml/badge.svg" /></a>
   <a href="https://opensource.org/licenses/MIT"><img alt="License: MIT" src="https://img.shields.io/badge/License-MIT-yellow.svg" /></a>
   <a href="https://github.com/zhiwuli0228/dsh-image-router/stargazers"><img alt="GitHub stars" src="https://img.shields.io/github/stars/zhiwuli0228/dsh-image-router" /></a><br /><br />
-  <a href="https://www.npmjs.com/package/@deepseek-ai/dsh?activeTab=versions"><img alt="适配的 DSH：0.2.1-rc.3 侧栏槽位契约 + 0.1.5-rc.1 兼容" src="https://img.shields.io/badge/DSH-0.2.1--rc.3_contract_%2B_0.1.5--rc.1-4d6bfe" /></a>
-  <a href="#测试"><img alt="tests" src="https://img.shields.io/badge/tests-74_passing-brightgreen" /></a>
+  <a href="https://www.npmjs.com/package/@deepseek-ai/dsh?activeTab=versions"><img alt="适配的 DSH：0.2.2-rc.1 真机验证 + 0.1.5-rc.1 兼容" src="https://img.shields.io/badge/DSH-0.2.2--rc.1_verified_%2B_0.1.5--rc.1-4d6bfe" /></a>
+  <a href="#测试"><img alt="tests" src="https://img.shields.io/badge/tests-98_passing-brightgreen" /></a>
   <a href="#-一分钟安装"><img alt="install" src="https://img.shields.io/badge/install-one_command-4d6bfe" /></a><br /><br />
   <img alt="图片旁路识别" src="https://img.shields.io/badge/-图片旁路识别-4d6bfe" />
   <img alt="会话模型不变" src="https://img.shields.io/badge/-会话模型不变-4d6bfe" />
@@ -335,6 +335,9 @@ digest-retry reason=reasoning-consumed-budget budget=900->4096 images=1         
 digest-retry-ok budget=4096 chars=408
 tool session=<id> path=<路径> mediaType=image/png bytes=2322 chars=113             # 一次 describe_image 调用
 digest-dryRun session=<id> images=2                                                # dryRun 下的判定
+digest-dryRun session=<id> images=1 via=receipt                                    # 同上，图片来自 0.2.2 的上传收据
+receipt-images session=<id> receipts=1 of=2                                        # 0.2.2：file 收据里认出几张图（of= 是本条提示词的全部收据）
+receipt-resolve-skipped session=<id> <原因>                                        # 收据解析不了（冷会话/没有该服务）→ 交给宿主自己解析
 digest-failed reason=<消息> code=<码> images=1                                     # 视觉调用失败 → 保留图片
 digest-empty images=1 budget=900 chunks=… finish=…                                 # 模型没输出文本 → 保留图片
 digest-admit-failed <原因>                                                         # 图片落盘失败 → 不替换
@@ -343,7 +346,7 @@ settings-invalid <问题>                                                       
 session=<id> error=<消息> at=<栈帧>                                                # 插件内部异常（已兜住，提示词照常发出）
 ```
 
-**排查顺序**：有没有 `mounted`（没有 → 没挂上）→ 有没有 `config-resolved … -> <路由>`（确认生效的是哪条）→ 贴图那一刻有没有 `digest … chars=`（没有 → 看是 `digest-failed`、`digest-empty` 还是 `digest-skipped`）→ 工具是否可用看有没有 `tool-registered`。
+**排查顺序**：有没有 `mounted`（没有 → 没挂上）→ 有没有 `config-resolved … -> <路由>`（确认生效的是哪条）→ 贴图那一刻有没有 `digest … chars=`（没有 → 看是 `digest-failed`、`digest-empty` 还是 `digest-skipped`；**0.2.2 上先看有没有 `receipt-images`**：没有它说明图片以 `file` 收据到达但插件没认出来，有它却没有 `digest` 则问题在视觉路由）→ 工具是否可用看有没有 `tool-registered`。
 
 </details>
 
@@ -361,7 +364,9 @@ session=<id> error=<消息> at=<栈帧>                                         
 - **一次提示词一次调用**：同一条提示词里的多张图合并成**一次**视觉调用，产出一个文字块；`describe_image` 每次调用只处理一个文件。
 - **`describe_image` 与内置 `read_image` 的分工**：`read_image` 受「当前步骤路由必须声明 `image`」限制；`describe_image` 走旁路调用，任何模型都能用。主力换成纯文本模型后让模型改用后者即可。
 - **包装 `sessionController.prompt` 是非官方扩展点**：未来版本若改名 / 换实现，插件会退化为「不处理 + 记 warning」，不会崩。工具注册走官方 `ctx.tools.register()`。
+- **0.2.2 的收据解析依赖 `fileUploads` 服务**：Web 与桌面 profile 都自带它；若某个部署把它裁掉，粘贴图会以 `file` 收据直接进准入（审计记 `receipt-resolve-skipped` 或根本没有 `receipt-images`），此时只有 `describe_image` 可用。`file` 收据本身也是**非公开约定**，它由 composer 与 `resolvePromptFileReceipts` 两侧私下约定 —— 上游若再改形态，这里同样只退化不崩。
 - **switch 模式会出现模型切换提示**：借出视觉路由会写 `model`/`selection`，模型选择器会跳、GUI 会出现 `[model changed]`。想要全程无感请用默认的 `digest`。
+- **switch 模式在 DSH `0.2.2` 上尚未适配**：0.2.2 的 `dsh-api-session-controller` 删掉了 `selectionFor` / `selectForNextRequest`（0.2.1 里分别有 8 / 4 处引用，0.2.2 为 0），换成 `selectModel(request)` + 持久化的 `modelSelection.lastUsed`。插件目前只在启动时探测前者，探测不到就记 `mount-skipped no selection API` 并**不再包装 `prompt`** —— 图片不会被替换、模型也不会被借走，但 `describe_image` 仍然注册可用。0.2.2 上请用 `digest`；要让 switch 回来需要按新 API 重写取/还路由那一段。
 
 ## 🖥️ 兼容性
 
@@ -370,9 +375,12 @@ session=<id> error=<消息> at=<栈帧>                                         
 | DSH `0.1.5-rc.1+`（CLI：`dsh web` / headless / sdk / acp） | 真机验证。设置节走 `settings.register`，卡片挂在 `settings.plugin.item`；侧栏入口（若该版本声明 `sidebar.panellist` / `main`）同一套代码。 |
 | DSH `0.2.x`（`dsh-desktop 0.2.0-rc.2`） | 真机验证。设置节＝条目自己的 `Config`，卡片挂在 `plugins.bundle.config`。 |
 | DSH `0.2.1`（`dsh-desktop 0.2.1-rc.3` → **`0.2.1-rc.5`** 内嵌运行时） | 两条桌面线都真机取证：侧栏行、`main` 页、`plugins.bundle.config` 卡片三者都注册且 `active`（`Slots.listSubTree` 的 `occupants` 可读），rc.5 上还额外跑了一次完整冷启动。0.6.2 起另加两件当时缺的东西：① 设置节按 **loader 条目 id** 解析（该运行时是 `include:image-router`，不是 `image-router`），② 认领 0.2.1 新增的 `plugins.row.config` 行配置页（`<包名>#<补丁里声明的行 id>`），宿主递来的 `form` 直接写、不再猜命名空间。**再重启一次桌面 App 即可看到修复后的配置页**（装在 profile 里的副本是拷贝，不是软链）。 |
+| DSH **`0.2.2-rc.1`**（npm 上 `@deepseek-ai/dsh` 的 `latest`） | 0.6.4 真机验证，**digest 模式全绿**：12 个契约包与 rc.5 逐文件比对，插件依赖的四面（`sidebar.panellist` 行 + `main` 页 + `plugins.bundle.config` 卡片 + `plugins.row.config` 行页）契约未变；独立 `DSH_HOME` 冷启动 `apply-entered … schema=schemastery` → `tool-registered name=describe_image` → `vision-oracle-registered` → `mounted`；boot manifest 里 `dsh-image-router` 与三条 `inject` 都在且可解析；无头 Edge 渲染出侧栏行、独立配置页、插件页卡片，点「保存」把配置写回 profile 补丁层且无报错。**switch 模式在 0.2.2 上不可用**：`selectionFor` / `selectForNextRequest` 已被 `selectModel` + `modelSelection.lastUsed` 取代，插件会记 `mount-skipped no selection API`，只保留 `describe_image`。 |
 | Node.js | ≥ 20（CI 覆盖 20 / 22 / 24） |
 | 平台 | Windows / Linux / macOS |
 | profile | `web` / `desktop` 验证最充分；headless / sdk / acp 也能激活（`sessionController` 缺席时插件不包装，只注册工具） |
+
+**版本边界写在 `package.json` 里，不只是写在这张表里。** `engines.dsh`: `>=0.1.5-rc.1 <0.3.0-0`：0.2.2 起 `dsh-app-boot` 的兼容性预检会在组合 profile 之前读它（`evaluatePluginCompatibility`），不满足的插件行会被 `disabled` 并给出诊断，而 0.1.5 那代宿主忽略该字段（插件靠能力探测，不靠版本号）。上界用 `<0.3.0-0` 而不是 `<0.3.0`，是为了把 `0.3.0-rc.*` 也挡在外面 —— 大版本跨越必须重新取证，不能靠"应该没事"放行。已用 0.2.2 自己的 `evaluatePluginCompatibility` 逐版本核对：`0.1.5-rc.1` / `0.2.0-rc.2` / `0.2.1-rc.5` / `0.2.2-rc.1` / `0.2.3` 放行，`0.1.4` / `0.3.0-rc.1` / `0.3.0` 拒绝。
 
 ## 🧬 0.2.x 与 0.1.x 的差异
 
@@ -391,6 +399,7 @@ session=<id> error=<消息> at=<栈帧>                                         
 | 浏览器侧绑定 | `settingsScope` 服务 + `scope.set(field, value)` | 没有；一律走 `remote.settings.describe()` / `mutate(ns, ops, revision)` |
 | 密钥 | 卡片写进节，Host 随即取走存进凭据库 | 同上，并且 Host 存完凭据后会**把明文从配置里 `unset`**（否则它会留在 profile 补丁里） |
 | `package.json` 的 `dsh.client.inject` | 声明客户端模块依赖 | 官方包把它写成**客户端包名行**（参考 `plugin-manager`：`api-remotes` + `locale` + `layout` + `sidebar`）。0.6.0 起插件改同一形状：`@deepseek-ai/dsh-api-remotes`、`@deepseek-ai/dsh-client-ui-layout`、`@deepseek-ai/dsh-client-ui-sidebar` —— 这三行是侧栏入口所在的组合。真正的服务闸门仍是模块自己的 `inject` 列表（`slots`/`remote`/`remote.settings`/`remote.llm`） |
+| 粘贴图在提示词里的形态 | composer 直接内联 `{ type:'image', mediaType, data }`，图片字节随提示词到达 | **0.2.2 起换了**：composer 先 `fileUpload.uploadImage`（`uploadImageStream`，带 `imageMediaType`）落盘，提示词只发 `{ type:'file', receiptId }`；`sessionController.prompt()` 内部才把收据换成 `{ type:'image', attachment, encodedBytes }`。所以**任何包装 `prompt` 的插件看到的都是 `file`，不是 `image`**。0.6.5 起插件用 `ctx.fileUploads.resolve(agent, receiptId)` 还原（`receipt-images` 审计行），并支持两种形态并存 |
 
 **为什么必须这么做**：0.4.4 把 `settingsScope` 写进了浏览器半边的 `inject`。0.2.x 的 web boot 会遍历每个客户端条目，凡是 `fiber.state !== 'active'` 就报错退出，pending 的还会列出解析不到的服务名 —— 于是整次启动被一句 `web boot: 1 entry did not activate … pending (waiting for service: settingsScope)` 中止，配置写什么都没用，因为这一步发生在读取配置之前。现在两半都只用两代都有的服务（客户端 `slots` / `remote` / `remote.settings` / `remote.llm`，宿主侧 `settings` / `llm` / `credentials` / `tools` / `fs` / `attachments` / `sessionController`），缺 `settings.register` 时只记一行 `settings-unsupported`。
 
@@ -406,7 +415,7 @@ node tools/check-contract.mjs   # 打包契约（CI 跑的就是它）
 
 **打包契约**由 `tools/check-contract.mjs` 一处定义，`ci.yml` 与 `release.yml` 都调它，所以两边不会漂移、你也能跑 CI 跑的同一份。它守住五件事:① 声明的补丁文件存在;② 声明的浏览器一半存在且真的注册了侧栏入口与主面板(字符串断言：`sidebar.panellist` 行 + `name: 'main'` 页);③ 入口导出满足 loader 消费的那套(含 `Config` 必须能答 Cordis 的 `~standard.validate`、settings 服务的调用与 `toJSON()` 字段图 —— 断言的是**两种 schema 形态都满足的契约**,`safeParse` 刻意不在其中,因为 fallback 有而真 schemastery 没有);④ `dsh.client.inject` 里写着侧栏入口所在的两个包行(`ui-layout` / `ui-sidebar`);⑤ **README 顶部那行版本号与 `package.json` 一致** —— 这两个文件靠人手同步,而 npm 页面显示一个、registry 服务另一个,除此之外没人会发现它们漂移。
 
-74 个用例：配置归一化与校验（含旧模式名映射、schema 物化出的空对象/空数组、端点档补齐 vision 路由与两档优先级）、图片信号判定、digest 的替换/多图合并/失败保留/无图直通/dryRun/落盘失败/完成块兜底/对象 finish 原因/预算被思考吃光后重试、`describe_image` 的注册/读文件/问题透传/拒绝路径、设置节的注册与「保存后下一轮即生效」、**0.2.x 式服务（没有 `register`）只记审计不失败**、校验失败被忽略、自定义端点写入上游路由与凭据（含"跳过/失败不得记为已同步"的可重试契约、"合并而非覆盖上游 profile"、以及**密钥写进凭据库后从配置里抹掉**）、图片能力 oracle、**schema 契约（含 `volatile` 与 secret 标记，且不得父子同时标）**、**浏览器半边激活契约（四个槽位各挂一次：两代设置卡片 + 侧栏行 + 主面板；`inject` 不得再出现 `settingsScope`；summary/panel 视图分离；侧栏行与主面板必须同 id；行标签跟随界面语言；侧栏图标为内联 SVG）**、**section base 不得遮蔽端点**、switch 的借出‑归还‑放弃状态机、`holdTurns`、`sticky`、冷会话不路由也不告警、审计可写与不可写、无 `sessionController` 时不包装、卸载恢复。
+83 个用例：配置归一化与校验（含旧模式名映射、schema 物化出的空对象/空数组、端点档补齐 vision 路由与两档优先级）、图片信号判定、**0.2.2 上传收据形态（收据图被 digest、普通文件收据直通、无 file-upload 服务/未登台收据不影响准入、被拒绝时回滚收据绑定、switch 检测、`receipt-images` 审计）**、digest 的替换/多图合并/失败保留/无图直通/dryRun/落盘失败/完成块兜底/对象 finish 原因/预算被思考吃光后重试、`describe_image` 的注册/读文件/问题透传/拒绝路径、设置节的注册与「保存后下一轮即生效」、**0.2.x 式服务（没有 `register`）只记审计不失败**、校验失败被忽略、自定义端点写入上游路由与凭据（含"跳过/失败不得记为已同步"的可重试契约、"合并而非覆盖上游 profile"、以及**密钥写进凭据库后从配置里抹掉**）、图片能力 oracle、**schema 契约（含 `volatile` 与 secret 标记，且不得父子同时标）**、**浏览器半边激活契约（四个槽位各挂一次：两代设置卡片 + 侧栏行 + 主面板；`inject` 不得再出现 `settingsScope`；summary/panel 视图分离；侧栏行与主面板必须同 id；行标签跟随界面语言；侧栏图标为内联 SVG）**、**section base 不得遮蔽端点**、switch 的借出‑归还‑放弃状态机、`holdTurns`、`sticky`、冷会话不路由也不告警、审计可写与不可写、无 `sessionController` 时不包装、卸载恢复。
 
 CI（`.github/workflows/ci.yml`）在 Ubuntu + Windows × Node 20/22/24 上跑同一套用例，并跑上面那份打包契约。
 
@@ -484,7 +493,9 @@ tools/*-probe.mjs        五个运行时探针（digest / tool / switch 序列 /
 
 | 环节 | 结论 |
 |---|---|
-| 单测 | ✅ 92 个用例（77 路由/宿主/客户端 + 15 安装器） |
+| 单测 | ✅ 98 个用例（83 路由/宿主/客户端 + 15 安装器） |
+| **0.2.2 图片提示词形态（0.6.5 修复）** | ✅ ① **形态取证**：当前桌面 `app.asar` 与 npm `0.2.2-rc.1` 的同名文件逐行一致 —— `dsh-client-ui-conversation` 在 `ordinary` 会话把图片 `fileUpload.uploadImage` 之后序列化成 `{type:'file', receiptId}`，`dsh-api-session-controller` 的 `prompt()` 只在**内部** `resolvePromptFileReceipts` 才换成 `image`；对照 npm `0.2.1-rc.5` 的 `dsh-client-file-upload` 里没有 `uploadImageStream`（图片一律内联），即这是 0.2.2 引入的变更。② **单测**：新增 7 个用例覆盖两种形态（收据图、普通文件收据、无 file-upload 服务、未登台收据、被拒绝时回滚绑定、switch 检测、`receipt-images` 审计）。③ **真机贴图待验证**：需要在 GUI 里贴一张图确认 `receipt-images` → `digest … chars=` 两行都出现 —— 这一步尚未做，不是已证结论 |
+| **桌面 `0.2.2-rc.1` 同步（0.6.4）** | ✅ ① **契约比对**：npm 上 12 个 rc.1 包对 rc.5 逐文件比对（`dsh` / `dsh-settings` / `dsh-plugin-manager` / `dsh-client-ui-settings` / `dsh-client-ui-layout` / `dsh-client-ui-sidebar` / `dsh-client-modules` / `dsh-app-boot` / `dsh-package-manifest` / `dsh-web-app` / `dsh-api-remotes` / `dsh-llm-pi-ai`，另补 `dsh-client-ui-settings-plugins` / `dsh-client-ui-plugin-manager` 两个槽位持有方）：`dsh-client-ui-settings` 的 `client.js` 字节相同，`plugins.bundle.config` / `plugins.row.config` 的 key 与 `renderSlot(…, { view }, { entryKey })` 调用一字未改，`sidebar.panellist` 的 props（`{ size, active }` + `only: id`）与 `main` 的 `entryKey` 分发不变，`dsh-settings` 仍以 `entry.options.id` 当 `ns`；差异只有 6 个新 UI 语言、新增的 `settings.section.icon` 槽、`client-modules` 的 `asset()`、plugin-manager 的版本/诊断模块，以及被删掉的 `DSH_TOOLS_MODE` 临时开关。② **真机冷启动**：用 npm `@deepseek-ai/dsh@0.2.2-rc.1` 在独立 `DSH_HOME` 起 `dsh web --port 0 --no-open`，插件由 0.2.2 自带 CLI 装入（`plugin --profile web add file:…`，退出码 0），审计依次写 `apply-entered mode=digest … schema=schemastery`（确认走的是 3.19.0 的真 schemastery）、`tool-registered name=describe_image`、`vision-oracle-registered ns=image-router`、`endpoint-services settings=yes credentials=yes`、`mounted`；页面 boot manifest 报 `release.version=0.2.2-rc.1`，`dsh-image-router` 条目与三条 `inject` 都在且都能解析。③ **真机渲染与写路径**：无头 Edge（CDP）打开该实例 —— 侧栏行「图片路由」渲染、点开是独立配置页（`mode`/`instruction`/`maxTokens`/`timeoutMs`/`label` + 保存/还原）、「插件」页「已安装插件」列出本插件并带 `v0.6.4` 与本地化描述、bundle 详情的 `[data-plugin-config]` 卡片渲染出表单；点「保存」无 console 报错，`profile/cordis.patch.yml` 被宿主重写（键序变化、注释被去除 = 真实 `mutate` 落盘）。④ **switch 对照**：把 profile 改成 `mode: switch` 重启，审计写 `mount-skipped no selection API controller.selectionFor=undefined controller.agents=object inner.selectionFor=undefined`，`describe_image` 仍在 —— 即 0.2.2 的 `selectModel` API 未适配前该模式不可用（已写入〈已知限制〉）。⑤ **版本门**：用 0.2.2 的 `@deepseek-ai/dsh-app-boot` 导出 `evaluatePluginCompatibility` 对本包的 `engines.dsh` 逐版本核对，放行/拒绝结果见〈兼容性〉下的说明 |
 | **桌面 `0.2.1-rc.5` 同步（0.6.2）** | ✅ ① **契约比对**：把 npm 上 12 个 rc.5 包（`dsh` / `dsh-settings` / `dsh-plugin-manager` / `dsh-client-ui-settings` / `dsh-client-ui-layout` / `dsh-client-ui-sidebar` / `dsh-client-modules` / `dsh-app-boot` / `dsh-package-manifest` / `dsh-web-app` / `dsh-api-remotes` / `dsh-llm-pi-ai`）与 `dsh-desktop 0.2.1-rc.3` 的 `app.asar` 逐文件比对：104 个文件字节相同，差异只有 `package.json` 版本号、两个客户端 bundle 的 CSS 类名哈希/构建路径、以及 `dsh-client-modules` 里的提交号常量。② **真机冷启动**：用 rc.5 在独立 `DSH_HOME` 起 `dsh web --port 0 --no-open`，审计依次写 `apply-entered mode=digest … schema=schemastery`、`tool-registered name=describe_image`、`vision-oracle-registered ns=image-router`、`mounted …`；页面 boot manifest 里 `dsh-image-router` 的 `inject` 仍是那三条（`dsh-api-remotes` / `dsh-client-ui-layout` / `dsh-client-ui-sidebar`）。③ **桌面安装包本体**：把 `deepseek-harness-0.2.1-rc.5-win-x64.exe`（sha512 校验通过）里的 `app-64.7z` 解出来，用其中的 `resources/runtime/cli/bin/dsh.cmd`（`runtime.json` → `desktopVersion: 0.2.1-rc.5`）重复上述冷启动，再用 Edge 打开：侧栏行「图片路由」（含内联 SVG 图标）与它的独立配置页都正常渲染；把 `instruction` 留空点「保存」，profile 里**没有** `instruction` 键（走的是 `unset`），控制台无报错。 |
 | **手动安装按目标（desktop / web）** | ✅ 用 `dsh-desktop 0.2.1-rc.3` **自带**的 CLI 真机取证：`…\resources\runtime\cli\bin\dsh.cmd --version` → `0.2.1-rc.3`（PATH 上的是 `0.1.5-rc.1`，两者不同），`plugin --profile desktop list` 读出真实 profile `C:\Users\…\.dsh\profiles\desktop` 与 `dsh-image-router@file:…`；安装器在一个**全新临时 `DSH_HOME`** 上真装了一次 web profile：profile 被初始化、`dependencies` 写入 `file:` 规格、`dsh.profile.bundles` 自动补上 `dsh-image-router`，退出码 0（同时实测出两个必须修的坑：`.cmd` 直接 `spawnSync` 是 `EINVAL`、`--home` 必须转成子进程的 `DSH_HOME`） |
 | **0.2.x 客户端契约（无 `settingsScope`）** | ✅ 真机（离线运行时）验证：把 `dsh-desktop 0.2.0-rc.2` 内嵌的运行时从 `app.asar` 解出、以独立 `DSH_HOME` 起 `dsh-web`，插件在 0.2.0 上完成挂载（审计见下），boot manifest 里列出 `dsh-image-router` 客户端条目；渲染器那一侧（卡片外观）仍需在 GUI 里看一眼 |
