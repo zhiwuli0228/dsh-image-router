@@ -127,7 +127,7 @@ await check('the browser half resolves its settings namespace', () => {
 	const client = read(manifest.exports['./client'])
 	if (!/function sectionView\(/.test(client)) throw new Error('client.js has no sectionView() resolver')
 	if (!/NAMESPACE_SUFFIXES/.test(client)) throw new Error('client.js has no suffixed-id fallback for `include:<row id>` entry ids')
-	if (!/function namespaceClient\(remote,\s*readForm\)/.test(client)) throw new Error('client.js must accept the Host page form beside the Remote table')
+	if (!/function namespaceClient\(remote,\s*readForm[^)]*\)/.test(client)) throw new Error('client.js must accept the Host page form beside the Remote table')
 	if (!/props\?\.form/.test(client)) throw new Error('the card registration must forward the owner-supplied `form`')
 	return 'exact id, then suffix, then schema shape'
 })
@@ -248,3 +248,4 @@ if (problems.length > 0) {
 	process.exit(1)
 }
 console.log('\ncontract ok')
+

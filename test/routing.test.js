@@ -331,7 +331,11 @@ test('normalizeConfig applies defaults and rejects unusable input', () => {
 	assert.equal(legacySticky.mode, 'switch')
 	assert.equal(legacySticky.sticky, true)
 
-	assert.ok(normalizeConfig({ text: TEXT }).problems.some((problem) => problem.includes('vision')))
+	// A missing vision route is a configuration state, not a broken plugin: it must
+	// mount so the settings card can supply one (a fresh install has no YAML route).
+	const unconfigured = normalizeConfig({ text: TEXT })
+	assert.equal(unconfigured.problems, undefined, 'an unconfigured plugin must still load')
+	assert.equal(unconfigured.vision, undefined)
 	assert.ok(normalizeConfig({ vision: VISION, mode: 'sometimes' }).problems.some((problem) => problem.includes('mode')))
 	assert.ok(normalizeConfig({ vision: VISION, hint: '(' }).problems.some((problem) => problem.includes('hint')))
 	assert.ok(normalizeConfig({ vision: VISION, holdTurns: -1 }).problems.some((problem) => problem.includes('holdTurns')))
@@ -356,8 +360,11 @@ test('normalizeConfig treats schema-materialized empty values as absent', () => 
 	assert.ok(filled.imageExtensions.includes('png'), 'the default extension list is restored')
 	assert.equal(filled.mode, 'digest')
 
-	// An empty vision object is still "no vision route configured".
-	assert.ok(normalizeConfig({ vision: {} }).problems.some((problem) => problem.includes('vision')))
+	// An empty vision object is still "no vision route configured" — and that is a
+	// mountable state, not a problem: the card is how the route gets supplied.
+	const emptyVision = normalizeConfig({ vision: {} })
+	assert.equal(emptyVision.problems, undefined)
+	assert.equal(emptyVision.vision, undefined)
 })
 
 test('a live (volatile) configuration value is unwrapped before it is read', () => {
@@ -425,6 +432,26 @@ test('sameModel compares provider and model only', () => {
 	assert.equal(sameModel({ provider: 'a', model: 'm' }, { provider: 'a', model: 'm', reasoningEffort: 'high' }), true)
 	assert.equal(sameModel({ provider: 'a', model: 'm' }, { provider: 'a', model: 'n' }), false)
 	assert.equal(sameModel(undefined, { provider: 'a', model: 'm' }), false)
+})
+
+test('an unconfigured plugin passes images through instead of swallowing them', async () => {
+	// A fresh install has no vision route. The prompt must reach the session model's
+	// own path unchanged (so its refusal names the real reason), and the audit must
+	// explain what to do — the alternative used to be a plugin that never mounted at
+	// all, which is why the card could not be filled in.
+	const controller = fakeController({ noSelectionApi: true })
+	const llm = fakeLlm()
+	const trace = join(mkdtempSync(join(tmpdir(), 'image-router-unconfigured-')), 'trace.log')
+	const ctx = fakeContext(controller, llm, { attachments: fakeAttachments() })
+	apply(ctx, { traceFile: trace })
+
+	const result = await controller.prompt({ sessionId: 's1', content: IMAGE })
+
+	assert.deepEqual(result, { accepted: true, model: 'deepseek-flash' })
+	assert.equal(llm.calls.length, 0, 'no vision call is attempted without a route')
+	const forwarded = controller.requests[0]
+	assert.equal(forwarded.content.filter((part) => part.type === 'image').length, 1, 'the image is left in place')
+	assert.ok(readFileSync(trace, 'utf8').includes('no-vision-configured'), 'the audit says why nothing happened')
 })
 
 test('digest mode replaces prompt images with the vision answer and never touches the model', async () => {
@@ -891,12 +918,14 @@ test('switch mode warns once per unusable route and dryRun only logs', async () 
 	assert.ok(dryCtx.logs.info.some((message) => message.includes('dryRun')))
 })
 
-test('apply disables itself on unusable configuration instead of throwing', () => {
+test('apply mounts an unconfigured plugin so its settings card can supply a route', () => {
+	// The card is the only way to configure a fresh install, so "no vision route"
+	// must not disable the entry: that left a card that could not be written to.
 	const controller = fakeController()
 	const ctx = fakeContext(controller)
 	apply(ctx, { text: TEXT })
-	assert.equal(ctx.logs.warn.length, 1)
-	assert.ok(ctx.logs.warn[0].includes('vision'))
+	assert.equal(ctx.logs.warn.length, 0, 'an unconfigured plugin is not a broken one')
+	assert.ok(ctx.logs.info.some((message) => message.includes('vision route')), 'the info line says what to do next')
 
 	const disabled = fakeContext(controller)
 	apply(disabled, { enabled: false, vision: VISION })
@@ -1289,8 +1318,10 @@ test('normalizeConfig reports a malformed endpoint instead of disabling silently
 	const badApi = normalizeConfig({ vision: { endpoint: { ...ENDPOINT, api: 'grpc' } } })
 	assert.ok(badApi.problems.some((problem) => problem.includes(ENDPOINT_APIS.join(', '))), 'an unsupported protocol lists the accepted set')
 
+	// Nothing configured at all is the fresh-install state: mountable, not broken.
 	const noRoute = normalizeConfig({})
-	assert.ok(noRoute.problems.some((problem) => problem.includes('vision.endpoint')), 'the error tells the user both ways to configure it')
+	assert.equal(noRoute.problems, undefined, 'an empty configuration must still load')
+	assert.equal(noRoute.vision, undefined)
 })
 
 test('readEndpoint treats a schema-materialized empty object as unset', () => {
@@ -2471,7 +2502,54 @@ test('a bundle-inserted entry id still resolves the settings section', async () 
 	assert.equal(writes[0].ops.some((op) => op.op === 'set' && op.path[0] === 'instruction'), false, 'never written back as an empty string')
 })
 
-test('a Host-supplied page form is preferred over the Remote table', async () => {
+test('the card backfills the route from the layer that states it', () => {
+	// The user-visible failure this pins: the plugin ran on qwen-token-plan-cn /
+	// qwen3.8-flash, yet the card drew empty provider/model boxes and a dropdown on
+	// some unrelated model. A settings view carries `value` (defaults → composition
+	// base → user), `base` and `user`, and seeding the editor from ONE layer dropped a
+	// route the other layers state. Each field is now filled from the first layer that
+	// states it, and the source is reported so a blank card can explain itself.
+	const source = readFileSync(new URL('../client/client.js', import.meta.url), 'utf8')
+	let entry
+	new Function('window', source)({ __ModuleLoader__: { load: (value) => { entry = value } } })
+	const React = { createElement: () => null, useState: (initial) => [initial, () => {}], useEffect: () => {}, useCallback: (fn) => fn, useMemo: (fn) => fn(), useRef: (initial) => ({ initial }) }
+	const module = entry.factory((name) => (name === 'react' ? React : (() => { throw new Error(name) })()))
+	const compose = module.__sectionLayers
+	assert.equal(typeof compose, 'function', 'the composition is exportable for a test')
+
+	// The composed value of a 0.2.x entry can carry defaults only (an empty vision),
+	// while the composition base states the route the plugin is actually running on.
+	const fromBase = compose({
+		value: { mode: 'digest', maxTokens: 900, timeoutMs: 120000, label: true, vision: {} },
+		base: { mode: 'digest', vision: { provider: 'qwen-token-plan-cn', model: 'qwen3.8-flash' } },
+		user: {}
+	})
+	assert.equal(fromBase.value.vision.provider, 'qwen-token-plan-cn', 'the provider comes from the base layer')
+	assert.equal(fromBase.value.vision.model, 'qwen3.8-flash')
+	assert.equal(fromBase.sources.vision, 'base', 'and the card can say where it came from')
+
+	// A field the composed value itself states is authoritative over the layers below.
+	const fromValue = compose({
+		value: { vision: { provider: 'value-provider', model: 'value-model' } },
+		base: { vision: { provider: 'base-provider', model: 'base-model' } },
+		user: {}
+	})
+	assert.equal(fromValue.value.vision.provider, 'value-provider')
+	assert.equal(fromValue.sources.vision, 'value')
+
+	// The user layer answers when neither of the other two states the field.
+	const fromUser = compose({ value: {}, base: {}, user: { vision: { provider: 'user-provider', model: 'user-model' } } })
+	assert.equal(fromUser.value.vision.provider, 'user-provider')
+	assert.equal(fromUser.sources.vision, 'user')
+
+	// Nothing anywhere stays nothing — the card then says "未配置" instead of inventing
+	// a route the Host never stated.
+	const empty = compose({ value: { vision: {} }, base: {}, user: {} })
+	assert.deepEqual(empty.value.vision, {})
+	assert.equal(empty.sources.vision, 'none')
+})
+
+test('a Host-supplied page form answers when the Remote table serves no section', async () => {
 	const harness = desktopHarness()
 	const formWrites = []
 	let renderCard
@@ -2529,3 +2607,5 @@ test('a Host-supplied page form is preferred over the Remote table', async () =>
 	assert.ok(formWrites[0].ops.some((op) => op.op === 'unset' && op.path[0] === 'instruction'), 'the blank instruction is unset here too')
 	assert.equal(formWrites[0].ops.some((op) => op.op === 'set' && op.path[0] === 'instruction'), false)
 })
+
+

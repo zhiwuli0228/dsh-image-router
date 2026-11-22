@@ -175,46 +175,130 @@ window.__ModuleLoader__.load({
 		 *   so a re-rendered props object never forces a new client (and with it a
 		 *   reload loop).
 		 */
-		function namespaceClient(remote, readForm) {
+		/** Fields the card seeds its editor from. */
+		const SEEDED_FIELDS = ['mode', 'vision', 'instruction', 'maxTokens', 'timeoutMs', 'label']
+
+		/** Whether a layer actually states this field (an empty object or '' does not). */
+		function states(layer, key) {
+			const value = layer === null || typeof layer !== 'object' ? undefined : layer[key]
+			if (value === undefined || value === null) return false
+			if (typeof value === 'string') return value.length > 0
+			if (Array.isArray(value)) return value.length > 0
+			if (typeof value === 'object') return Object.keys(value).length > 0
+			return true
+		}
+
+		/**
+		 * The section value composed from what the Host states, most authoritative first.
+		 *
+		 * A settings view carries three layers: `value` (defaults → composition base →
+		 * user layer), `base` (composition base, defaults resolved) and `user`. The card
+		 * used to seed from ONE of them, and on 0.2.x the one it picked could be empty
+		 * for a field the other two state — which is exactly how a configured
+		 * `vision.provider/model` rendered as blank inputs while the plugin was running
+		 * on that very route ("没有回填"). Filling each field from the first layer that
+		 * states it keeps the editor honest whatever the Host projects.
+		 *
+		 * @param view - one `settings.describe()` namespace view.
+		 * @returns `{ value, sources }`: the composed value and, per field, the layer it
+		 *   came from (`value` | `base` | `user` | `none`).
+		 */
+		function composeLayers(view) {
+			const value = routeOf(view?.value)
+			const composed = { ...value }
+			const sources = {}
+			for (const key of SEEDED_FIELDS) {
+				if (states(composed, key)) {
+					sources[key] = 'value'
+					continue
+				}
+				let taken
+				for (const [name, layer] of [['base', view?.base], ['user', view?.user]]) {
+					if (!states(layer, key)) continue
+					composed[key] = layer[key]
+					taken = name
+					break
+				}
+				sources[key] = taken ?? 'none'
+			}
+			if (states(view?.user, 'vision')) sources.visionUser = true
+			return { value: composed, sources }
+		}
+
+		function namespaceClient(remote, readForm, report) {
 			/** The form this call may use, or undefined when the page owns no form. */
 			const ownedForm = () => {
 				const form = readForm === undefined ? undefined : readForm()
 				return form !== undefined && form !== null && form.state !== undefined ? form : undefined
 			}
+			/** Note how the section was read, so a blank card can say why. */
+			const note = (detail) => {
+				if (report === undefined) return
+				try {
+					report.read = detail
+				} catch {
+					/* a frozen report must never break a read */
+				}
+			}
 
 			return {
 				async read() {
+					// The composed describe view is tried FIRST, and a Host-owned page form is
+					// the fallback: the form states only the layer it writes, while
+					// `describe().value` is the configuration in force (defaults → base →
+					// user). Seeding from the form alone rendered an empty route for a route
+					// configured in the profile patch.
+					if (remote !== undefined) {
+						let views
+						try {
+							const response = await remote.settings.describe()
+							views = response !== null && typeof response === 'object' && response.ok === true ? response.value?.namespaces : undefined
+						} catch (error) {
+							note('describe 失败：' + (error && error.message ? error.message : String(error)))
+						}
+						const view = views === undefined ? undefined : sectionView(views)
+						if (view !== undefined) {
+							// Remembered on the Remote table, not on this client: a later render
+							// builds a new client and still has to write to this namespace.
+							RESOLVED_SECTIONS.set(remote, view.ns)
+							const composed = composeLayers(view)
+							note('describe · ns=' + view.ns + ' · vision 来自 ' + (composed.sources.vision ?? 'none'))
+							return {
+								value: composed.value,
+								// A view that does not state `writable` is treated as writable: the
+								// 0.1.x view carries the flag, and a missing one must not silently
+								// turn a working card into a read-only banner.
+								writable: view.writable !== false,
+								revision: view.revision
+							}
+						}
+						if (views !== undefined) {
+							// No section at all: reported only after the form path had its chance,
+							// so a deployment that serves the form alone still renders a card.
+							const owned = ownedForm()
+							if (owned === undefined) {
+								const available = namespaceNames(views)
+								const error = new Error('没有找到本插件的设置节（entry ' + NAMESPACE + '）。当前 Host 提供的命名空间：' + (available.length === 0 ? '（空）' : available.join('、')))
+								error.code = 'image-router/section-missing'
+								error.namespaces = available
+								throw error
+							}
+						}
+					}
 					const owned = ownedForm()
 					if (owned !== undefined) {
 						const state = owned.state
+						const composed = composeLayers({ value: state?.value, base: state?.base, user: state?.user })
+						note('form · vision 来自 ' + (composed.sources.vision ?? 'none') + (state?.status === undefined ? '' : ' · status=' + state.status))
 						return {
-							value: routeOf(state?.value),
+							value: composed.value,
 							writable: state?.writable !== false,
 							revision: state?.revision
 						}
 					}
 					if (remote === undefined) return undefined
-					const response = await remote.settings.describe()
-					const views = response !== null && typeof response === 'object' && response.ok === true ? response.value?.namespaces : undefined
-					const view = sectionView(views)
-					if (view === undefined) {
-						const available = namespaceNames(views)
-						const error = new Error('没有找到本插件的设置节（entry ' + NAMESPACE + '）。当前 Host 提供的命名空间：' + (available.length === 0 ? '（空）' : available.join('、')))
-						error.code = 'image-router/section-missing'
-						error.namespaces = available
-						throw error
-					}
-					// Remembered on the Remote table, not on this client: a later render
-					// builds a new client and still has to write to this namespace.
-					RESOLVED_SECTIONS.set(remote, view.ns)
-					return {
-						value: routeOf(view.value),
-						// A view that does not state `writable` is treated as writable: the
-						// 0.1.x view carries the flag, and a missing one must not silently
-						// turn a working card into a read-only banner.
-						writable: view.writable !== false,
-						revision: view.revision
-					}
+					note('没有可读的设置源')
+					return undefined
 				},
 				async write(ops, revision) {
 					const owned = ownedForm()
@@ -496,8 +580,12 @@ window.__ModuleLoader__.load({
 			// The form's IDENTITY is unstable (a fresh props object per render), but its
 			// PRESENCE is not: only that travels in the dependency list.
 			const hasForm = props.form !== undefined
+			// Stable per card instance: the read path records how it got the section, so
+			// an empty editor says whether the Host stated nothing or the card read the
+			// wrong layer.
+			const readerRef = React.useRef({ read: undefined })
 			const client = React.useMemo(
-				() => (remote === undefined && !hasForm ? undefined : namespaceClient(remote, () => formRef.current)),
+				() => (remote === undefined && !hasForm ? undefined : namespaceClient(remote, () => formRef.current, readerRef.current)),
 				[remote, hasForm]
 			)
 			const [snapshot, setSnapshot] = React.useState(null)
@@ -628,8 +716,24 @@ window.__ModuleLoader__.load({
 
 			const rows = candidates?.rows ?? []
 			const selectable = rows.slice()
+			/**
+			 * The route in force is ALWAYS one of the options.
+			 *
+			 * A `<select>` whose `value` matches no option silently renders its first
+			 * option, so a stored route the picker cannot enumerate (a catalog route, a
+			 * retired provider id, or a fresh install whose list is still loading) looked
+			 * like "the model is huawei / deepseek-v4-flash" while the configuration said
+			 * something else — and the next save would overwrite the real choice with the
+			 * one the control happened to display.
+			 */
+			const storedRoute = {
+				provider: text(value.vision.provider),
+				model: text(value.vision.model)
+			}
+			const routeListed = (row) => row.provider === storedRoute.provider && row.model === storedRoute.model
 			if (endpointConfigured) selectable.push({ provider: ENDPOINT_PROVIDER, model: base.endpoint.model, label: `${ENDPOINT_PROVIDER} / ${base.endpoint.model}（自定义端点）`, source: 'endpoint' })
-			else if (!value.vision.provider && !value.vision.model) selectable.push({ provider: '待配置', model: '待配置', label: '尚未配置 vision 路由', source: 'placeholder' })
+			else if (!storedRoute.provider && !storedRoute.model) selectable.push({ provider: '', model: '', label: '尚未配置 vision 路由 — 请选择或填写', source: 'placeholder' })
+			else if (!selectable.some(routeListed)) selectable.unshift({ provider: storedRoute.provider, model: storedRoute.model, label: `${storedRoute.provider} / ${storedRoute.model}（当前生效）`, source: 'current' })
 
 			const save = async () => {
 				if (!writable) {
@@ -725,9 +829,13 @@ window.__ModuleLoader__.load({
 				}
 			}
 
+			// The option value has to be the SAME spelling the control's `value` uses
+			// (`provider\u0000model`, or the empty string when nothing is chosen), or the
+			// bottom placeholder reads as a chosen route.
+			const optionValue = (row) => (row.provider && row.model ? `${row.provider}\u0000${row.model}` : '')
 			const routeOptions = selectable.map((row) => h('option', {
 				key: `${row.provider}/${row.model}`,
-				value: `${row.provider}\u0000${row.model}`
+				value: optionValue(row)
 			}, (sameRoute(row) ? '● ' : '') + row.label))
 			if (selectable.length === 0) routeOptions.push(h('option', { key: 'empty', value: '' }, '（还没有可选项）'))
 
@@ -939,10 +1047,20 @@ window.__ModuleLoader__.load({
 				])
 			]
 
+			// The route actually in force, as the editor seeded it. Drawn as one quiet line
+			// so "the boxes are empty" is never ambiguous again: it names the layer the
+			// value came from, which is the fact a bug report needs.
+			const effectiveLabel = endpointConfigured
+				? `${ENDPOINT_PROVIDER} / ${text(base.endpoint.model)}（自定义端点）`
+				: storedRoute.provider && storedRoute.model
+					? `${storedRoute.provider} / ${storedRoute.model}`
+					: '未配置'
+			const readLine = h('p', { style: styles.status, key: 'read' }, '当前生效：' + effectiveLabel + (readerRef.current.read === undefined ? '' : ' · 读取：' + readerRef.current.read))
+
 			// 0.2.x's bundle page asks for `page`; the sidebar panel asks for `panel`.
 			// Both draw the same form — the panel omits the card's own banner because
 			// the page around it already draws the heading.
-			if (props.view === 'panel') return h('div', { style: styles.formPanel, key: 'panel' }, formBody)
+			if (props.view === 'panel') return h('div', { style: styles.formPanel, key: 'panel' }, [readLine, ...formBody])
 
 			return h('div', { style: styles.card }, [
 				h('div', { style: styles.head, key: 'head' }, [
@@ -954,6 +1072,7 @@ window.__ModuleLoader__.load({
 					h('br', { key: 'br' }),
 					'此处的值覆盖 profile 补丁层的配置，保存后立即生效。'
 				]),
+				readLine,
 				...formBody
 			])
 		}
@@ -1245,6 +1364,8 @@ window.__ModuleLoader__.load({
 
 		exports.NAMESPACE = NAMESPACE
 		exports.FIELDS = FIELDS
+		/** Test seam: the layer composition the card seeds its editor from. */
+		exports.__sectionLayers = composeLayers
 		exports.apply = apply
 		exports.inject = inject
 		exports.name = name
